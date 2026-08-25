@@ -46,9 +46,22 @@ message and the bot announces the winner.
 - `/leaderboard` — top 10 users by total wins
 - `/streak` — shows your (or someone else's) current consecutive-win streak; resets when anyone else wins a round
 - `/skip` — cancels the active round in that channel and reveals the answer
+- `/duel @user` — 1v1 flag race; only the two of you can answer, first correct guess wins
+- `/profile @user` — shows total wins, current streak, and best-ever streak
+- `/dailychallenge` — one shared flag per day, everyone gets exactly one guess (right or wrong), resets at midnight server time. Whichever channel starts it first hosts it for the day.
+- `/osaka` — sends a random gif of Osaka (Ayumu Kasuga, from Azumanga Daioh). Requires a free Giphy API key (see below).
 - `/cheat code:123123 user:@someone wins:50` — manually sets a user's win count on the leaderboard. Change `CHEAT_CODE` near the top of `flag_bot.py` if you want a different code. Response is private (only you see it).
+- `/cmds` — shows this list in-Discord (English + Arabic)
+
+## Setting up /osaka (Giphy API key)
+1. Go to https://developers.giphy.com and create a free account
+2. Create an "App" (choose the API, not SDK) — this instantly gives you a key, no approval wait
+3. Add it as an environment variable named `GIPHY_API_KEY` (same way you added `DISCORD_TOKEN`)
+4. Without this key set, `/osaka` will still respond, just with a message saying it isn't configured yet — it won't crash the bot.
+5. Note: Giphy's free "beta" key defaults to a lower rate limit and shows a watermark on search results; you can request production access for free later if you outgrow it — fine for casual server use as-is.
 
 ## Customizing
 - Add/remove countries in the `COUNTRIES` list near the top of `flag_bot.py` — each entry needs a flag emoji, a list of accepted English answers, and a list of accepted Arabic answers.
-- Only one round runs per channel at a time; a new `/flag` can't start until the current one is answered.
+- Only one round (`/flag` or `/duel`) runs per channel at a time; a new one can't start until the current one is answered or skipped.
+- The daily challenge runs independently of `/flag`/`/duel` rounds — if a normal round is active in a channel, daily-challenge guesses in that channel are ignored until the round ends.
 - Scores are saved to `scores.json` in the same folder as the bot. Note: on Railway's free tier the filesystem may reset on redeploy, so scores aren't guaranteed to survive updates — let me know if you want this upgraded to a real database later.

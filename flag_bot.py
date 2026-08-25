@@ -22,7 +22,9 @@ import re
 import json
 import random
 import unicodedata
+from datetime import date
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -41,6 +43,12 @@ CHEAT_CODE = "123123"
 DEV_USERNAME = "1d_d1"
 
 SCORES_FILE = "scores.json"
+
+# Free API key from https://developers.giphy.com (instant approval for a
+# personal/test key) needed for /osaka to pull gifs. Without it, /osaka will
+# tell users it's not configured.
+GIPHY_API_KEY = os.environ.get("GIPHY_API_KEY", "")
+OSAKA_SEARCH_TERMS = ["Osaka Azumanga Daioh", "Ayumu Kasuga anime"]
 
 # ----------------------------------------------------------------------
 # COUNTRY DATA: flag emoji -> accepted English names, accepted Arabic names
@@ -189,6 +197,16 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # channel_id -> currently active country dict (or None if no round running)
 active_rounds: dict[int, dict] = {}
 
+# Global daily challenge state (one shared challenge across the bot, hosted
+# in whichever channel first ran /dailychallenge that day)
+daily_challenge = {
+    "date": None,
+    "country": None,
+    "channel_id": None,
+    "winner_id": None,
+    "attempted": set(),
+}
+
 # ----------------------------------------------------------------------
 # SCORE / STREAK PERSISTENCE
 # ----------------------------------------------------------------------
@@ -230,9 +248,11 @@ def record_win(user_id: int) -> None:
         if other_id != uid:
             data["streak"] = 0
 
-    entry = scores.setdefault(uid, {"wins": 0, "streak": 0})
+    entry = scores.setdefault(uid, {"wins": 0, "streak": 0, "best_streak": 0})
+    entry.setdefault("best_streak", 0)
     entry["wins"] += 1
     entry["streak"] += 1
+    entry["best_streak"] = max(entry["best_streak"], entry["streak"])
     save_scores(scores)
 
 
@@ -328,6 +348,142 @@ async def skip_command(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="duel", description="Challenge someone to a 1v1 flag race — only you two can answer.")
+@app_commands.describe(opponent="Who you want to duel")
+async def duel_command(interaction: discord.Interaction, opponent: discord.Member):
+    channel_id = interaction.channel_id
+
+    if opponent.id == interaction.user.id:
+        await interaction.response.send_message("You can't duel yourself!", ephemeral=True)
+        return
+    if opponent.bot:
+        await interaction.response.send_message("You can't duel a bot!", ephemeral=True)
+        return
+
+    if active_rounds.get(channel_id):
+        await interaction.response.send_message(
+            "A round is already in progress in this channel! 🏳️", ephemeral=True
+        )
+        return
+
+    country = dict(random.choice(COUNTRIES))
+    country["_duel_players"] = {interaction.user.id, opponent.id}
+    active_rounds[channel_id] = country
+
+    await interaction.response.send_message(
+        f"⚔️ **Duel!** {interaction.user.mention} vs {opponent.mention}\n"
+        f"Only you two can answer. First correct guess wins!\n\n# {country['flag']}"
+    )
+
+
+@bot.tree.command(name="profile", description="Show a player's flag-game stats.")
+@app_commands.describe(user="Whose profile to check (optional)")
+async def profile_command(interaction: discord.Interaction, user: discord.Member = None):
+    target = user or interaction.user
+    entry = scores.get(str(target.id), {"wins": 0, "streak": 0, "best_streak": 0})
+
+    embed = discord.Embed(title=f"📊 {target.display_name}'s Profile", color=discord.Color.blue())
+    if target.display_avatar:
+        embed.set_thumbnail(url=target.display_avatar.url)
+    embed.add_field(name="Total Wins", value=str(entry.get("wins", 0)), inline=True)
+    embed.add_field(name="Current Streak", value=str(entry.get("streak", 0)), inline=True)
+    embed.add_field(name="Best Streak", value=str(entry.get("best_streak", 0)), inline=True)
+
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="dailychallenge", description="Play today's shared flag challenge — one guess per person.")
+async def dailychallenge_command(interaction: discord.Interaction):
+    today = date.today().isoformat()
+
+    if daily_challenge["date"] != today:
+        # New day: generate a fresh challenge, same for everyone regardless of
+        # which channel starts it, using the date as a deterministic seed.
+        seeded_random = random.Random(today)
+        daily_challenge["date"] = today
+        daily_challenge["country"] = seeded_random.choice(COUNTRIES)
+        daily_challenge["channel_id"] = interaction.channel_id
+        daily_challenge["winner_id"] = None
+        daily_challenge["attempted"] = set()
+
+        await interaction.response.send_message(
+            "🌅 **Today's Daily Challenge!** Everyone gets ONE guess (English or Arabic). "
+            f"Resets at midnight.\n\n# {daily_challenge['country']['flag']}"
+        )
+        return
+
+    # Same day, challenge already exists somewhere
+    if daily_challenge["winner_id"] is not None:
+        winner = interaction.guild.get_member(daily_challenge["winner_id"]) if interaction.guild else None
+        winner_name = winner.display_name if winner else f"User {daily_challenge['winner_id']}"
+        country = daily_challenge["country"]
+        await interaction.response.send_message(
+            f"Today's challenge is already solved! {country['flag']} was **{country['en'][0].title()}** "
+            f"({country['ar'][0]}) — guessed first by **{winner_name}**. Come back tomorrow!"
+        )
+        return
+
+    if interaction.channel_id != daily_challenge["channel_id"]:
+        channel_mention = f"<#{daily_challenge['channel_id']}>"
+        await interaction.response.send_message(
+            f"Today's challenge is already running in {channel_mention} — head over there to guess!",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        f"Today's challenge is still open here! You get one guess.\n\n# {daily_challenge['country']['flag']}"
+    )
+
+
+@bot.tree.command(name="osaka", description="Get a random Osaka (Ayumu Kasuga) gif!")
+async def osaka_command(interaction: discord.Interaction):
+    if not GIPHY_API_KEY:
+        await interaction.response.send_message(
+            "The bot owner hasn't set up a Giphy API key yet, so `/osaka` isn't available. "
+            "(Free key at developers.giphy.com — add it as the GIPHY_API_KEY variable.)",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer()
+
+    query = random.choice(OSAKA_SEARCH_TERMS)
+    url = "https://api.giphy.com/v1/gifs/search"
+    params = {
+        "api_key": GIPHY_API_KEY,
+        "q": query,
+        "limit": 30,
+        "rating": "g",  # safe-for-work only
+        "lang": "en",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    await interaction.followup.send("Couldn't reach Giphy right now, try again in a bit.")
+                    return
+                data = await resp.json()
+    except (aiohttp.ClientError, TimeoutError):
+        await interaction.followup.send("Couldn't reach Giphy right now, try again in a bit.")
+        return
+
+    results = data.get("data", [])
+    if not results:
+        await interaction.followup.send("Couldn't find an Osaka gif right now, try again!")
+        return
+
+    choice = random.choice(results)
+    gif_url = choice.get("images", {}).get("original", {}).get("url")
+
+    if not gif_url:
+        await interaction.followup.send("Couldn't find an Osaka gif right now, try again!")
+        return
+
+    await interaction.followup.send(gif_url)
+
+
 @bot.tree.command(name="cheat", description="Admin only: manually edit a user's leaderboard wins with a code.")
 @app_commands.describe(code="The access code", user="User to edit", wins="New win count to set for this user")
 async def cheat_command(interaction: discord.Interaction, code: str, user: discord.Member, wins: int):
@@ -376,6 +532,26 @@ async def cmds_command(interaction: discord.Interaction):
         inline=False,
     )
     embed_en.add_field(
+        name="/duel",
+        value="Challenge another user to a 1v1 flag race — only you two can answer.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/profile",
+        value="Shows a player's total wins, current streak, and best streak ever.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/dailychallenge",
+        value="One shared flag challenge per day — everyone gets a single guess. Resets at midnight.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/osaka",
+        value="Sends a random Osaka (Ayumu Kasuga) gif.",
+        inline=False,
+    )
+    embed_en.add_field(
         name="/cheat",
         value="shhh...youre not supposed to use this only for me :3",
         inline=False,
@@ -411,6 +587,26 @@ async def cmds_command(interaction: discord.Interaction):
         inline=False,
     )
     embed_ar.add_field(
+        name="/duel",
+        value="تحدَّ شخصاً آخر في مبارزة أعلام 1 ضد 1 — أنتما فقط تستطيعان الإجابة.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/profile",
+        value="يعرض إجمالي فوز اللاعب، سلسلته الحالية، وأفضل سلسلة حققها.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/dailychallenge",
+        value="تحدي علم مشترك يومياً — كل شخص له محاولة واحدة فقط. يتجدد كل منتصف ليل.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/osaka",
+        value="يرسل صورة متحركة عشوائية لشخصية أوساكا (أيومو كاسوغا).",
+        inline=False,
+    )
+    embed_ar.add_field(
         name="/cheat",
         value="ششش... ما يفترض تستخدمه، بس لي أنا :3",
         inline=False,
@@ -434,7 +630,11 @@ async def on_message(message: discord.Message):
     country = active_rounds.get(channel_id)
 
     if country:
-        if is_correct_guess(message.content, country):
+        duel_players = country.get("_duel_players")
+        if duel_players and message.author.id not in duel_players:
+            # Ignore chatter from anyone not in the duel — don't react at all.
+            pass
+        elif is_correct_guess(message.content, country):
             active_rounds[channel_id] = None
             try:
                 await message.add_reaction("✅")
@@ -455,6 +655,37 @@ async def on_message(message: discord.Message):
                 await message.add_reaction("❌")
             except discord.HTTPException:
                 pass
+    else:
+        # No normal/duel round active here — check the daily challenge instead.
+        today = date.today().isoformat()
+        if (
+            daily_challenge["date"] == today
+            and daily_challenge["channel_id"] == channel_id
+            and daily_challenge["winner_id"] is None
+            and message.author.id not in daily_challenge["attempted"]
+        ):
+            daily_challenge["attempted"].add(message.author.id)
+            dc_country = daily_challenge["country"]
+
+            if is_correct_guess(message.content, dc_country):
+                daily_challenge["winner_id"] = message.author.id
+                try:
+                    await message.add_reaction("✅")
+                except discord.HTTPException:
+                    pass
+
+                record_win(message.author.id)
+                en_name = dc_country["en"][0].title()
+                ar_name = dc_country["ar"][0]
+                await message.channel.send(
+                    f"🌟 {message.author.mention} solved today's Daily Challenge! "
+                    f"{dc_country['flag']} was **{en_name}** ({ar_name})"
+                )
+            else:
+                try:
+                    await message.add_reaction("❌")
+                except discord.HTTPException:
+                    pass
 
     await bot.process_commands(message)
 
