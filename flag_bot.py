@@ -36,6 +36,10 @@ TOKEN = os.environ.get("DISCORD_TOKEN", "PASTE_YOUR_TOKEN_HERE")
 # Code required to use /cheat to manually edit the leaderboard
 CHEAT_CODE = "123123"
 
+# Discord username (not nickname/display name) that gets a "(the dev)" tag
+# on the leaderboard. Usernames are lowercase-compared.
+DEV_USERNAME = "1d_d1"
+
 SCORES_FILE = "scores.json"
 
 # ----------------------------------------------------------------------
@@ -178,6 +182,7 @@ def is_correct_guess(message_content: str, country: dict) -> bool:
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -270,8 +275,22 @@ async def leaderboard_command(interaction: discord.Interaction):
     lines = []
     medals = ["🥇", "🥈", "🥉"]
     for i, (uid, data) in enumerate(ranked):
-        member = interaction.guild.get_member(int(uid)) if interaction.guild else None
-        name = member.display_name if member else f"User {uid}"
+        member = None
+        if interaction.guild:
+            member = interaction.guild.get_member(int(uid))
+            if member is None:
+                try:
+                    member = await interaction.guild.fetch_member(int(uid))
+                except discord.HTTPException:
+                    member = None
+
+        if member:
+            name = member.display_name
+            if member.name.lower() == DEV_USERNAME:
+                name += " (the dev)"
+        else:
+            name = f"User {uid}"
+
         prefix = medals[i] if i < 3 else f"{i + 1}."
         lines.append(f"{prefix} **{name}** — {data['wins']} win(s)")
 
@@ -332,41 +351,78 @@ async def cheat_command(interaction: discord.Interaction, code: str, user: disco
 
 @bot.tree.command(name="cmds", description="Show all available commands.")
 async def cmds_command(interaction: discord.Interaction):
-    embed = discord.Embed(
+    embed_en = discord.Embed(
         title="📜 Available Commands",
         color=discord.Color.blurple(),
     )
-    embed.add_field(
+    embed_en.add_field(
         name="/flag",
         value="Starts a round! The bot posts a random flag — first person to type the country name (English or Arabic) wins.",
         inline=False,
     )
-    embed.add_field(
+    embed_en.add_field(
         name="/leaderboard",
         value="Shows the top 10 players by total wins.",
         inline=False,
     )
-    embed.add_field(
+    embed_en.add_field(
         name="/streak",
         value="Shows your (or someone else's) current win streak. Streaks reset when someone else wins a round.",
         inline=False,
     )
-    embed.add_field(
+    embed_en.add_field(
         name="/skip",
         value="Cancels the current round in this channel and reveals the answer.",
         inline=False,
     )
-    embed.add_field(
+    embed_en.add_field(
         name="/cheat",
         value="shhh...youre not supposed to use this only for me :3",
         inline=False,
     )
-    embed.add_field(
+    embed_en.add_field(
         name="/cmds",
         value="Shows this list.",
         inline=False,
     )
-    await interaction.response.send_message(embed=embed)
+
+    embed_ar = discord.Embed(
+        title="📜 الأوامر المتاحة",
+        color=discord.Color.blurple(),
+    )
+    embed_ar.add_field(
+        name="/flag",
+        value="يبدأ جولة جديدة! يرسل البوت علماً عشوائياً — أول شخص يكتب اسم الدولة (بالإنجليزية أو العربية) يفوز.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/leaderboard",
+        value="يعرض أفضل 10 لاعبين حسب عدد الفوز.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/streak",
+        value="يعرض سلسلة انتصاراتك الحالية (أو سلسلة شخص آخر). تُعاد السلسلة إلى الصفر عند فوز شخص آخر بجولة.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/skip",
+        value="يلغي الجولة الحالية في هذه القناة ويكشف الإجابة.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/cheat",
+        value="ششش... ما يفترض تستخدمه، بس لي أنا :3",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/cmds",
+        value="يعرض هذه القائمة.",
+        inline=False,
+    )
+
+    await interaction.response.send_message(embed=embed_en)
+    await interaction.followup.send(embed=embed_ar)
 
 
 @bot.event

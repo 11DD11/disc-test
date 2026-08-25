@@ -11,7 +11,7 @@ message and the bot announces the winner.
 1. **Create a bot application**
    - Go to https://discord.com/developers/applications → New Application
    - Go to the "Bot" tab → click "Reset Token" → copy the token (keep it secret!)
-   - Under "Privileged Gateway Intents", enable **MESSAGE CONTENT INTENT** (required to read guesses in chat)
+   - Under "Privileged Gateway Intents", enable **MESSAGE CONTENT INTENT** (required to read guesses in chat) and **SERVER MEMBERS INTENT** (required so the leaderboard can show usernames instead of raw IDs)
 
 2. **Invite the bot to your server**
    - Go to OAuth2 → URL Generator
