@@ -41,6 +41,14 @@ message and the bot announces the winner.
 
 6. In Discord, type `/flag` in any channel the bot can see.
 
+## Commands
+- `/flag` — start a round; posts a random flag
+- `/leaderboard` — top 10 users by total wins
+- `/streak` — shows your (or someone else's) current consecutive-win streak; resets when anyone else wins a round
+- `/skip` — cancels the active round in that channel and reveals the answer
+- `/cheat code:123123 user:@someone wins:50` — manually sets a user's win count on the leaderboard. Change `CHEAT_CODE` near the top of `flag_bot.py` if you want a different code. Response is private (only you see it).
+
 ## Customizing
 - Add/remove countries in the `COUNTRIES` list near the top of `flag_bot.py` — each entry needs a flag emoji, a list of accepted English answers, and a list of accepted Arabic answers.
 - Only one round runs per channel at a time; a new `/flag` can't start until the current one is answered.
+- Scores are saved to `scores.json` in the same folder as the bot. Note: on Railway's free tier the filesystem may reset on redeploy, so scores aren't guaranteed to survive updates — let me know if you want this upgraded to a real database later.

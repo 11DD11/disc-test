@@ -19,6 +19,7 @@ guesses in chat.
 
 import os
 import re
+import json
 import random
 import unicodedata
 
@@ -31,6 +32,11 @@ from discord.ext import commands
 # ----------------------------------------------------------------------
 
 TOKEN = os.environ.get("DISCORD_TOKEN", "PASTE_YOUR_TOKEN_HERE")
+
+# Code required to use /cheat to manually edit the leaderboard
+CHEAT_CODE = "123123"
+
+SCORES_FILE = "scores.json"
 
 # ----------------------------------------------------------------------
 # COUNTRY DATA: flag emoji -> accepted English names, accepted Arabic names
@@ -178,6 +184,52 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # channel_id -> currently active country dict (or None if no round running)
 active_rounds: dict[int, dict] = {}
 
+# ----------------------------------------------------------------------
+# SCORE / STREAK PERSISTENCE
+# ----------------------------------------------------------------------
+# scores structure:
+# {
+#   "user_id_str": {"wins": int, "streak": int}
+# }
+# "streak" = that user's current number of consecutive round wins.
+# Note: on most free hosts (Railway included) the filesystem is not
+# guaranteed to persist across redeploys. For permanent storage across
+# restarts/redeploys, swap this out for a small database later.
+
+
+def load_scores() -> dict:
+    if os.path.exists(SCORES_FILE):
+        try:
+            with open(SCORES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def save_scores(scores: dict) -> None:
+    try:
+        with open(SCORES_FILE, "w", encoding="utf-8") as f:
+            json.dump(scores, f, indent=2)
+    except OSError as e:
+        print(f"Failed to save scores: {e}")
+
+
+scores: dict = load_scores()
+
+
+def record_win(user_id: int) -> None:
+    """Increment the winner's wins + streak, and reset everyone else's streak."""
+    uid = str(user_id)
+    for other_id, data in scores.items():
+        if other_id != uid:
+            data["streak"] = 0
+
+    entry = scores.setdefault(uid, {"wins": 0, "streak": 0})
+    entry["wins"] += 1
+    entry["streak"] += 1
+    save_scores(scores)
+
 
 @bot.event
 async def on_ready():
@@ -207,6 +259,116 @@ async def flag_command(interaction: discord.Interaction):
     )
 
 
+@bot.tree.command(name="leaderboard", description="Show the top flag-guessers.")
+async def leaderboard_command(interaction: discord.Interaction):
+    if not scores:
+        await interaction.response.send_message("No one has scored yet — start a round with `/flag`!")
+        return
+
+    ranked = sorted(scores.items(), key=lambda kv: kv[1]["wins"], reverse=True)[:10]
+
+    lines = []
+    medals = ["🥇", "🥈", "🥉"]
+    for i, (uid, data) in enumerate(ranked):
+        member = interaction.guild.get_member(int(uid)) if interaction.guild else None
+        name = member.display_name if member else f"User {uid}"
+        prefix = medals[i] if i < 3 else f"{i + 1}."
+        lines.append(f"{prefix} **{name}** — {data['wins']} win(s)")
+
+    embed = discord.Embed(title="🏆 Flag Leaderboard", description="\n".join(lines), color=discord.Color.gold())
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="streak", description="Show the current top winning streak, or your own.")
+@app_commands.describe(user="Check someone else's streak (optional)")
+async def streak_command(interaction: discord.Interaction, user: discord.Member = None):
+    target = user or interaction.user
+    entry = scores.get(str(target.id))
+
+    if not entry or entry["streak"] == 0:
+        await interaction.response.send_message(f"{target.display_name} doesn't have an active streak.")
+        return
+
+    await interaction.response.send_message(f"🔥 {target.display_name}'s current streak: **{entry['streak']}**")
+
+
+@bot.tree.command(name="skip", description="Cancel the current flag round and reveal the answer.")
+async def skip_command(interaction: discord.Interaction):
+    channel_id = interaction.channel_id
+    country = active_rounds.get(channel_id)
+
+    if not country:
+        await interaction.response.send_message("There's no active flag round to skip.", ephemeral=True)
+        return
+
+    active_rounds[channel_id] = None
+    en_name = country["en"][0].title()
+    ar_name = country["ar"][0]
+    await interaction.response.send_message(
+        f"⏭️ Round skipped. {country['flag']} was **{en_name}** ({ar_name})"
+    )
+
+
+@bot.tree.command(name="cheat", description="Admin only: manually edit a user's leaderboard wins with a code.")
+@app_commands.describe(code="The access code", user="User to edit", wins="New win count to set for this user")
+async def cheat_command(interaction: discord.Interaction, code: str, user: discord.Member, wins: int):
+    if code != CHEAT_CODE:
+        await interaction.response.send_message("❌ Incorrect code.", ephemeral=True)
+        return
+
+    if wins < 0:
+        await interaction.response.send_message("Wins can't be negative.", ephemeral=True)
+        return
+
+    uid = str(user.id)
+    entry = scores.setdefault(uid, {"wins": 0, "streak": 0})
+    entry["wins"] = wins
+    save_scores(scores)
+
+    await interaction.response.send_message(
+        f"✅ Set **{user.display_name}**'s wins to **{wins}**.", ephemeral=True
+    )
+
+
+@bot.tree.command(name="cmds", description="Show all available commands.")
+async def cmds_command(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📜 Available Commands",
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(
+        name="/flag",
+        value="Starts a round! The bot posts a random flag — first person to type the country name (English or Arabic) wins.",
+        inline=False,
+    )
+    embed.add_field(
+        name="/leaderboard",
+        value="Shows the top 10 players by total wins.",
+        inline=False,
+    )
+    embed.add_field(
+        name="/streak",
+        value="Shows your (or someone else's) current win streak. Streaks reset when someone else wins a round.",
+        inline=False,
+    )
+    embed.add_field(
+        name="/skip",
+        value="Cancels the current round in this channel and reveals the answer.",
+        inline=False,
+    )
+    embed.add_field(
+        name="/cheat",
+        value="shhh...youre not supposed to use this only for me :3",
+        inline=False,
+    )
+    embed.add_field(
+        name="/cmds",
+        value="Shows this list.",
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed)
+
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -223,10 +385,14 @@ async def on_message(message: discord.Message):
             except discord.HTTPException:
                 pass
 
+            record_win(message.author.id)
+            new_streak = scores[str(message.author.id)]["streak"]
+
             en_name = country["en"][0].title()
             ar_name = country["ar"][0]
+            streak_note = f" 🔥 Streak: {new_streak}" if new_streak > 1 else ""
             await message.channel.send(
-                f"🎉 {message.author.mention} got it! {country['flag']} was **{en_name}** ({ar_name})"
+                f"🎉 {message.author.mention} got it! {country['flag']} was **{en_name}** ({ar_name}){streak_note}"
             )
         else:
             try:
