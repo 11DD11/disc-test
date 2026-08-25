@@ -30,7 +30,7 @@ from discord.ext import commands
 # CONFIG
 # ----------------------------------------------------------------------
 
-TOKEN = os.environ.get("DISCORD_TOKEN", "NzcyOTIxMzYyODU5MTYzNjg4.G5AGzT.MnNIENJocoBTwUWAtb-_eDK_yOex1dUVFwlPWw")
+TOKEN = os.environ.get("DISCORD_TOKEN", "PASTE_YOUR_TOKEN_HERE")
 
 # ----------------------------------------------------------------------
 # COUNTRY DATA: flag emoji -> accepted English names, accepted Arabic names
