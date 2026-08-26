@@ -811,6 +811,22 @@ async def tictactoe_command(interaction: discord.Interaction, opponent: discord.
 
 import chess as chesslib
 
+# Classic brown/tan checkerboard tiles for the board display. Discord has no
+# dedicated "tan" square emoji, so orange stands in for the light squares.
+LIGHT_SQUARE = "🟧"
+DARK_SQUARE = "🟫"
+
+CHESS_PIECE_SYMBOLS = {
+    (chesslib.PAWN, True): "♙", (chesslib.PAWN, False): "♟",
+    (chesslib.KNIGHT, True): "♘", (chesslib.KNIGHT, False): "♞",
+    (chesslib.BISHOP, True): "♗", (chesslib.BISHOP, False): "♝",
+    (chesslib.ROOK, True): "♖", (chesslib.ROOK, False): "♜",
+    (chesslib.QUEEN, True): "♕", (chesslib.QUEEN, False): "♛",
+    (chesslib.KING, True): "♔", (chesslib.KING, False): "♚",
+}
+
+FILE_LABELS = ["🇦", "🇧", "🇨", "🇩", "🇪", "🇫", "🇬", "🇭"]
+
 # channel_id -> ChessView, so only one game runs per channel at a time
 chess_games: dict[int, "ChessView"] = {}
 
@@ -949,7 +965,23 @@ class ChessView(discord.ui.View):
         self.from_select.placeholder = "Select a piece to move..."
 
     def board_display(self) -> str:
-        return f"```\n{self.board.unicode(borders=True)}\n```"
+        file_header = "⬛" + "".join(FILE_LABELS)
+        rows = [file_header]
+
+        for rank in range(7, -1, -1):
+            cells = []
+            for file in range(8):
+                square = chesslib.square(file, rank)
+                is_light = (rank + file) % 2 == 1
+                tile = LIGHT_SQUARE if is_light else DARK_SQUARE
+                piece = self.board.piece_at(square)
+                if piece:
+                    tile += CHESS_PIECE_SYMBOLS[(piece.piece_type, piece.color)]
+                cells.append(tile)
+            rank_label = f"{rank + 1}️⃣"
+            rows.append(rank_label + "".join(cells))
+
+        return "\n".join(rows)
 
     def status_line(self) -> str:
         turn_name = "White" if self.board.turn == chesslib.WHITE else "Black"
