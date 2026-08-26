@@ -47,6 +47,20 @@ DEV_USERNAME = "1d_d1"
 
 SCORES_FILE = "scores.json"
 
+# ----------------------------------------------------------------------
+# PRESENCE / RICH PRESENCE CONFIG
+# ----------------------------------------------------------------------
+# The "large" and "small" image keys below must match the asset keys you upload
+# in the Discord Developer Portal under your app's Rich Presence > Art Assets tab.
+# See the README for full setup steps.
+PRESENCE_STATUS_TEXT = "just watching :3"
+PRESENCE_DETAILS = "Hollow Knight: Silksong"
+PRESENCE_STATE = "Exploring Pharloom"
+PRESENCE_LARGE_IMAGE_KEY = "silksong_cover"
+PRESENCE_LARGE_IMAGE_TEXT = "Hollow Knight: Silksong"
+PRESENCE_SMALL_IMAGE_KEY = "hornet_sketch"
+PRESENCE_SMALL_IMAGE_TEXT = "Hornet"
+
 # Free API key from https://aistudio.google.com/apikey — no credit card needed.
 # Powers /ask. Without it, /ask will tell users it's not configured.
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
@@ -326,6 +340,25 @@ async def on_ready():
     except Exception as e:
         print(f"Slash command sync failed: {e}")
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
+    try:
+        app_id = bot.application_id or (await bot.application_info()).id
+        activity = discord.Activity(
+            type=discord.ActivityType.watching,
+            name=PRESENCE_STATUS_TEXT,
+            details=PRESENCE_DETAILS,
+            state=PRESENCE_STATE,
+            application_id=app_id,
+            assets={
+                "large_image": PRESENCE_LARGE_IMAGE_KEY,
+                "large_text": PRESENCE_LARGE_IMAGE_TEXT,
+                "small_image": PRESENCE_SMALL_IMAGE_KEY,
+                "small_text": PRESENCE_SMALL_IMAGE_TEXT,
+            },
+        )
+        await bot.change_presence(status=discord.Status.online, activity=activity)
+    except Exception as e:
+        print(f"Failed to set presence: {e}")
 
 
 @bot.tree.command(name="flag", description="Guess the country's flag! First correct answer wins.")

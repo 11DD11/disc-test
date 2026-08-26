@@ -73,6 +73,23 @@ message and the bot announces the winner.
 3. **Voice encryption library** — Discord is rolling out mandatory end-to-end encryption for voice (called DAVE). Newer discord.py versions need a companion package called `davey` to connect to voice at all — without it you'll get a "davey library needed" error. This is already in `requirements.txt`, so a fresh install should just work; if you're updating an existing deployment, make sure `requirements.txt` gets re-uploaded too so Railway installs it.
 4. **A quick legal note:** pulling audio from YouTube this way (via `yt-dlp`) is technically against YouTube's Terms of Service, even though it's extremely common practice for hobby Discord bots. Worth knowing if you ever run this at a larger scale.
 
+## Bot status / Rich Presence
+
+The bot shows a custom "Watching just watching :3" status, and clicking on its profile shows an expanded Rich Presence card with Silksong artwork and details.
+
+**Important limitation:** bots can only broadcast one activity at a time — there's no way to show a separate status text and a separate "Playing X" line simultaneously. What this setup actually does is attach the Silksong images/details to the *same* activity as the "just watching :3" text, so the one-line status under the bot's name reads "Watching just watching :3", while the expanded profile card (what people see when they click on the bot) shows the Silksong cover art, the Hornet sketch, and the details/state lines.
+
+**Setup (required, takes ~2 minutes):**
+1. Go to https://discord.com/developers/applications and open your bot's application
+2. Go to **Rich Presence → Art Assets** in the left sidebar
+3. Click **Add Image(s)** and upload both files from the `rich_presence_assets` folder:
+   - `silksong_cover.jpg` → give it the asset key **`silksong_cover`** (must match exactly, lowercase)
+   - `hornet_sketch.webp` → give it the asset key **`hornet_sketch`** (must match exactly, lowercase)
+4. Save. No code changes needed — the keys are already set in `flag_bot.py` under the `PRESENCE_*` constants near the top, so if you want different key names, update them there too.
+5. Restart the bot. It sets its presence automatically on startup (in `on_ready`).
+
+If you ever want to change the status text, game title, or swap the images, everything lives in the `PRESENCE_*` constants near the top of `flag_bot.py` — no need to touch the rest of the code.
+
 ## Setting up /osaka (Giphy API key)
 1. Go to https://developers.giphy.com and create a free account
 2. Create an "App" (choose the API, not SDK) — this instantly gives you a key, no approval wait
