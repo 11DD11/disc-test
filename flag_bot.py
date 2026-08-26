@@ -44,6 +44,12 @@ CHEAT_CODE = "123123"
 # on the leaderboard. Usernames are lowercase-compared.
 DEV_USERNAME = "1d_d1"
 
+# Easter egg: replying with just ".", "..", or "..." to a message from this
+# specific user posts a gif in response.
+DOT_REPLY_TARGET_USER_ID = 1264549467495989269
+DOT_REPLY_GIF_URL = "https://cdn.discordapp.com/attachments/805840493011140678/1097885486414045204/1632856392703811584.gif"
+DOT_REPLY_TRIGGERS = {".", "..", "..."}
+
 # Optional: your server's ID, for instant slash-command sync to that specific
 # server instead of waiting up to ~1hr for a global sync to propagate everywhere.
 # Right-click your server icon in Discord (with Developer Mode on) → Copy Server ID.
@@ -256,6 +262,17 @@ def is_correct_guess(message_content: str, country: dict) -> bool:
     return False
 
 
+def find_country_by_name(name: str) -> dict:
+    """Looks up a country by English or Arabic name, reusing the same matching
+    logic as guesses. Used by /flag's optional cheat-code override."""
+    norm_en = normalize_english(name)
+    norm_ar = normalize_arabic(name)
+    for country in COUNTRIES:
+        if norm_en in country["_norm"]["en"] or norm_ar in country["_norm"]["ar"]:
+            return country
+    return None
+
+
 # ----------------------------------------------------------------------
 # BOT SETUP
 # ----------------------------------------------------------------------
@@ -398,7 +415,8 @@ async def on_ready():
 
 
 @bot.tree.command(name="flag", description="Guess the country's flag! First correct answer wins.")
-async def flag_command(interaction: discord.Interaction):
+@app_commands.describe(code="psst", country="psst (only works with the code)")
+async def flag_command(interaction: discord.Interaction, code: str = None, country: str = None):
     channel_id = interaction.channel_id
 
     if active_rounds.get(channel_id):
@@ -407,11 +425,25 @@ async def flag_command(interaction: discord.Interaction):
         )
         return
 
-    country = random.choice(COUNTRIES)
-    active_rounds[channel_id] = country
+    chosen_country = None
+    if code == CHEAT_CODE and country:
+        chosen_country = find_country_by_name(country)
+        if chosen_country is None:
+            await interaction.response.send_message(
+                f"Couldn't find a country matching '{country}'.", ephemeral=True
+            )
+            return
+    elif code is not None and code != CHEAT_CODE:
+        await interaction.response.send_message("❌ Incorrect code.", ephemeral=True)
+        return
+
+    if chosen_country is None:
+        chosen_country = random.choice(COUNTRIES)
+
+    active_rounds[channel_id] = chosen_country
 
     await interaction.response.send_message(
-        f"**Guess the flag!** 🌍 (English or Arabic)\n\n# {country['flag']}"
+        f"**Guess the flag!** 🌍 (English or Arabic)\n\n# {chosen_country['flag']}"
     )
 
 
@@ -1330,10 +1362,37 @@ async def cmds_command(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed_ar)
 
 
+async def handle_dot_reply_easter_egg(message: discord.Message):
+    """If someone replies with just '.', '..', or '...' to a message from
+    DOT_REPLY_TARGET_USER_ID, post the configured gif."""
+    if message.content.strip() not in DOT_REPLY_TRIGGERS:
+        return
+    if not message.reference:
+        return
+
+    replied_to = message.reference.resolved
+    if replied_to is None:
+        try:
+            replied_to = await message.channel.fetch_message(message.reference.message_id)
+        except (discord.NotFound, discord.HTTPException):
+            return
+
+    if isinstance(replied_to, discord.DeletedReferencedMessage):
+        return
+
+    if replied_to.author.id == DOT_REPLY_TARGET_USER_ID:
+        try:
+            await message.channel.send(DOT_REPLY_GIF_URL)
+        except discord.HTTPException:
+            pass
+
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+
+    await handle_dot_reply_easter_egg(message)
 
     channel_id = message.channel.id
     country = active_rounds.get(channel_id)

@@ -42,7 +42,7 @@ message and the bot announces the winner.
 6. In Discord, type `/flag` in any channel the bot can see.
 
 ## Commands
-- `/flag` — start a round; posts a random flag
+- `/flag` — start a round; posts a random flag. Has hidden optional `code`/`country` parameters: entering the correct code (same as `/cheat`'s) alongside a country name lets you pick that flag yourself instead of getting a random one. Wrong code shows a private error; no code just behaves normally.
 - `/leaderboard` — top 10 users by total wins
 - `/streak` — shows your (or someone else's) current consecutive-win streak; resets when anyone else wins a round
 - `/skip` — cancels the active round in that channel and reveals the answer
@@ -99,6 +99,9 @@ This is a Discord platform quirk, not a bug in the bot. Global slash-command syn
 4. Redeploy — the bot will now sync commands to that specific server instantly on every startup, in addition to the normal (slower) global sync for any other servers it's in
 
 If commands still don't show up for someone after that, have them fully restart their Discord app (not just switch servers) — the client caches the command list locally.
+
+## Easter egg: dot-reply gif
+If anyone replies with just `.`, `..`, or `...` to a message from the user with ID `1264549467495989269`, the bot posts a specific gif in response. The target user ID and gif URL are set via `DOT_REPLY_TARGET_USER_ID` and `DOT_REPLY_GIF_URL` near the top of `flag_bot.py` if you ever want to change them. This triggers for anyone's reply, not just a specific person's — let me know if you'd rather restrict who can trigger it.
 
 ## Removed features
 Voice/music commands (`/play`, `/vskip`, `/stop`, `/queue`, `/nowplaying`, `/join`, `/lofi`, `/panel`) have been removed, along with their dependencies (`yt-dlp`, `PyNaCl`, `davey`) and the `nixpacks.toml` file that installed `ffmpeg`/`libopus0` for them. If you want voice features back later, this is recoverable — just ask.
