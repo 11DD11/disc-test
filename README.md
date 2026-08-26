@@ -53,6 +53,8 @@ message and the bot announces the winner.
 - `/ask <question>` — currently a placeholder; replies "its under development still" regardless of what's asked.
 - `/quote` — sends a random short anime or video game quote from a curated list.
 - `/tictactoe @user` — challenges another member to Tic-Tac-Toe with a clickable 3x3 button grid. Only the two players can click; the game times out after 5 minutes of inactivity.
+- `/chess @user` — challenges another member to a full game of chess. Moves are made via two dropdown menus: pick a piece, then pick where to move it (a chess board has 64 squares, more than Discord's 25-component-per-message limit, so a button grid like Tic-Tac-Toe isn't possible here — dropdowns are the workaround). Handles check, checkmate, stalemate, castling, en passant, and promotion (auto-promotes to queen, no under-promotion choice). Includes a Resign button. Games time out after 30 minutes of inactivity.
+- `/rps @user` — challenges another member to Rock Paper Scissors. Both players pick secretly and simultaneously: the challenger gets a private picker immediately, and the opponent gets one after clicking a public "Make Your Choice" button. Neither sees the other's pick until both have chosen. Expires after 2 minutes if someone doesn't respond.
 - `/cheat code:123123 user:@someone wins:50` — manually sets a user's win count on the leaderboard. Change `CHEAT_CODE` near the top of `flag_bot.py` if you want a different code. Response is private (only you see it).
 - `/cmds` — shows this list in-Discord (English + Arabic)
 
@@ -85,6 +87,18 @@ If you ever want to change the status text, game title, or swap the images, ever
 - Only one round (`/flag` or `/duel`) runs per channel at a time; a new one can't start until the current one is answered or skipped.
 - The daily challenge runs independently of `/flag`/`/duel` rounds — if a normal round is active in a channel, daily-challenge guesses in that channel are ignored until the round ends.
 - Scores are saved to `scores.json` in the same folder as the bot. Note: on Railway's free tier the filesystem may reset on redeploy, so scores aren't guaranteed to survive updates — let me know if you want this upgraded to a real database later.
+
+## If some members can't see a command (e.g. /tictactoe)
+
+This is a Discord platform quirk, not a bug in the bot. Global slash-command syncing (which happens automatically on every bot startup) can take **up to an hour** to reach every member's client after a command is added or changed — some people will see it instantly, others won't until their client refreshes.
+
+**To make new commands appear instantly for your own server instead of waiting:**
+1. Turn on Developer Mode in Discord: Settings → Advanced → Developer Mode
+2. Right-click your server's icon → **Copy Server ID**
+3. Add an environment variable `SYNC_GUILD_ID` with that ID as the value
+4. Redeploy — the bot will now sync commands to that specific server instantly on every startup, in addition to the normal (slower) global sync for any other servers it's in
+
+If commands still don't show up for someone after that, have them fully restart their Discord app (not just switch servers) — the client caches the command list locally.
 
 ## Removed features
 Voice/music commands (`/play`, `/vskip`, `/stop`, `/queue`, `/nowplaying`, `/join`, `/lofi`, `/panel`) have been removed, along with their dependencies (`yt-dlp`, `PyNaCl`, `davey`) and the `nixpacks.toml` file that installed `ffmpeg`/`libopus0` for them. If you want voice features back later, this is recoverable — just ask.

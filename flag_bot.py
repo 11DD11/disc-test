@@ -44,6 +44,12 @@ CHEAT_CODE = "123123"
 # on the leaderboard. Usernames are lowercase-compared.
 DEV_USERNAME = "1d_d1"
 
+# Optional: your server's ID, for instant slash-command sync to that specific
+# server instead of waiting up to ~1hr for a global sync to propagate everywhere.
+# Right-click your server icon in Discord (with Developer Mode on) → Copy Server ID.
+SYNC_GUILD_ID = os.environ.get("SYNC_GUILD_ID", "")
+SYNC_GUILD_ID = int(SYNC_GUILD_ID) if SYNC_GUILD_ID.strip().isdigit() else None
+
 SCORES_FILE = "scores.json"
 
 # ----------------------------------------------------------------------
@@ -354,8 +360,19 @@ def record_win(user_id: int) -> None:
 @bot.event
 async def on_ready():
     try:
+        # A global sync (bot.tree.sync() with no guild) can take up to an hour to
+        # reach every member's client — this is why newly added commands like
+        # /tictactoe sometimes don't show up for everyone right away, even though
+        # the bot itself is running fine. If SYNC_GUILD_ID is set, we additionally
+        # copy commands to that specific server for near-instant propagation there.
         synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash command(s).")
+        print(f"Globally synced {len(synced)} slash command(s) (can take up to ~1hr to reach all clients).")
+
+        if SYNC_GUILD_ID:
+            guild_obj = discord.Object(id=SYNC_GUILD_ID)
+            bot.tree.copy_global_to(guild=guild_obj)
+            guild_synced = await bot.tree.sync(guild=guild_obj)
+            print(f"Instantly synced {len(guild_synced)} command(s) to guild {SYNC_GUILD_ID}.")
     except Exception as e:
         print(f"Slash command sync failed: {e}")
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
@@ -779,6 +796,342 @@ async def tictactoe_command(interaction: discord.Interaction, opponent: discord.
     view.message = await interaction.original_response()
 
 
+# ----------------------------------------------------------------------
+# CHESS
+# ----------------------------------------------------------------------
+# Uses the python-chess library for move legality, check/checkmate/stalemate
+# detection, etc. — writing correct chess rules from scratch (castling, en
+# passant, promotion, check detection) is a project in itself, and this is a
+# well-tested standard library for it.
+#
+# UI note: a chess board has 64 squares, but Discord caps a message at 25
+# total components, so a button-per-square grid (like /tictactoe) isn't
+# possible here. Instead, moves are made via two chained dropdowns:
+# "pick a piece to move" -> "pick where to move it".
+
+import chess as chesslib
+
+# channel_id -> ChessView, so only one game runs per channel at a time
+chess_games: dict[int, "ChessView"] = {}
+
+
+class ChessFromSelect(discord.ui.Select):
+    def __init__(self, game: "ChessView"):
+        super().__init__(placeholder="Select a piece to move...", min_values=1, max_values=1,
+                          options=[discord.SelectOption(label="Loading...", value="none")])
+        self.game = game
+
+    async def callback(self, interaction: discord.Interaction):
+        game = self.game
+        if interaction.user.id != game.current_player.id:
+            await interaction.response.send_message("It's not your turn!", ephemeral=True)
+            return
+
+        value = self.values[0]
+        if value == "none":
+            await interaction.response.send_message("No legal moves available.", ephemeral=True)
+            return
+
+        origin_square = chesslib.parse_square(value)
+        game.selected_origin = origin_square
+
+        dest_options = []
+        seen = set()
+        for move in game.board.legal_moves:
+            if move.from_square == origin_square:
+                dest_name = chesslib.square_name(move.to_square)
+                if dest_name in seen:
+                    continue  # collapse duplicate promotion-choice moves to the same square
+                seen.add(dest_name)
+                captured = game.board.piece_at(move.to_square)
+                label = f"→ {dest_name}" + (f" (captures {captured.symbol().upper()})" if captured else "")
+                dest_options.append(discord.SelectOption(label=label[:100], value=dest_name))
+
+        game.to_select.options = dest_options[:25]
+        game.to_select.disabled = False
+        game.to_select.placeholder = f"Move {value} to..."
+
+        await game.refresh_message(interaction)
+
+
+class ChessToSelect(discord.ui.Select):
+    def __init__(self, game: "ChessView"):
+        super().__init__(placeholder="Pick a piece first", min_values=1, max_values=1,
+                          options=[discord.SelectOption(label="Pick a piece first", value="none")], disabled=True)
+        self.game = game
+
+    async def callback(self, interaction: discord.Interaction):
+        game = self.game
+        if interaction.user.id != game.current_player.id:
+            await interaction.response.send_message("It's not your turn!", ephemeral=True)
+            return
+        if game.selected_origin is None or self.values[0] == "none":
+            await interaction.response.send_message("Pick a piece to move first.", ephemeral=True)
+            return
+
+        dest_square = chesslib.parse_square(self.values[0])
+        move = chesslib.Move(game.selected_origin, dest_square)
+
+        if move not in game.board.legal_moves:
+            # Auto-promote to queen if this move is only legal as a promotion.
+            promo_move = chesslib.Move(game.selected_origin, dest_square, promotion=chesslib.QUEEN)
+            if promo_move in game.board.legal_moves:
+                move = promo_move
+            else:
+                await interaction.response.send_message("That's not a legal move.", ephemeral=True)
+                return
+
+        game.board.push(move)
+        game.selected_origin = None
+        game.to_select.disabled = True
+        game.to_select.options = [discord.SelectOption(label="Pick a piece first", value="none")]
+        game.to_select.placeholder = "Pick a piece first"
+
+        if game.board.is_checkmate():
+            winner = game.white if game.board.turn == chesslib.BLACK else game.black
+            await game.end_game(interaction, f"🏆 Checkmate! {winner.mention} wins!")
+            return
+        if game.board.is_stalemate() or game.board.is_insufficient_material():
+            await game.end_game(interaction, "🤝 Draw.")
+            return
+
+        game.refresh_from_options()
+        await game.refresh_message(interaction)
+
+
+class ChessResignButton(discord.ui.Button):
+    def __init__(self, game: "ChessView"):
+        super().__init__(label="Resign", style=discord.ButtonStyle.danger, row=2)
+        self.game = game
+
+    async def callback(self, interaction: discord.Interaction):
+        game = self.game
+        if interaction.user.id not in (game.white.id, game.black.id):
+            await interaction.response.send_message("This isn't your game!", ephemeral=True)
+            return
+        winner = game.black if interaction.user.id == game.white.id else game.white
+        await game.end_game(interaction, f"🏳️ {interaction.user.mention} resigned. {winner.mention} wins!")
+
+
+class ChessView(discord.ui.View):
+    def __init__(self, white: discord.Member, black: discord.Member, channel_id: int):
+        super().__init__(timeout=1800)  # 30 min — chess games run long
+        self.board = chesslib.Board()
+        self.white = white
+        self.black = black
+        self.channel_id = channel_id
+        self.message: discord.Message = None
+        self.selected_origin = None
+
+        self.from_select = ChessFromSelect(self)
+        self.to_select = ChessToSelect(self)
+        self.add_item(self.from_select)
+        self.add_item(self.to_select)
+        self.add_item(ChessResignButton(self))
+
+        self.refresh_from_options()
+
+    @property
+    def current_player(self) -> discord.Member:
+        return self.white if self.board.turn == chesslib.WHITE else self.black
+
+    def refresh_from_options(self):
+        options = []
+        for square in chesslib.SQUARES:
+            piece = self.board.piece_at(square)
+            if piece and piece.color == self.board.turn:
+                if any(m.from_square == square for m in self.board.legal_moves):
+                    name = chesslib.square_name(square)
+                    options.append(discord.SelectOption(label=f"{piece.unicode_symbol()} {name}", value=name))
+        if not options:
+            options = [discord.SelectOption(label="No moves available", value="none")]
+        self.from_select.options = options[:25]
+        self.from_select.placeholder = "Select a piece to move..."
+
+    def board_display(self) -> str:
+        return f"```\n{self.board.unicode(borders=True)}\n```"
+
+    def status_line(self) -> str:
+        turn_name = "White" if self.board.turn == chesslib.WHITE else "Black"
+        check_note = " — Check!" if self.board.is_check() else ""
+        return f"**{turn_name}'s turn** ({self.current_player.mention}){check_note}"
+
+    def header(self) -> str:
+        return f"♟️ {self.white.mention} (White) vs {self.black.mention} (Black)"
+
+    async def refresh_message(self, interaction: discord.Interaction):
+        content = f"{self.header()}\n{self.board_display()}\n{self.status_line()}"
+        await interaction.response.edit_message(content=content, view=self)
+
+    async def end_game(self, interaction: discord.Interaction, result_text: str):
+        for child in self.children:
+            child.disabled = True
+        content = f"{self.header()}\n{self.board_display()}\n{result_text}"
+        await interaction.response.edit_message(content=content, view=self)
+        chess_games.pop(self.channel_id, None)
+        self.stop()
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(content=self.message.content + "\n\n⏱️ Game timed out from inactivity.", view=self)
+            except discord.HTTPException:
+                pass
+        chess_games.pop(self.channel_id, None)
+
+
+@bot.tree.command(name="chess", description="Challenge someone to a game of chess.")
+@app_commands.describe(opponent="Who you want to play against")
+async def chess_command(interaction: discord.Interaction, opponent: discord.Member):
+    if opponent.id == interaction.user.id:
+        await interaction.response.send_message("You can't play against yourself!", ephemeral=True)
+        return
+    if opponent.bot:
+        await interaction.response.send_message("You can't play against a bot!", ephemeral=True)
+        return
+    if interaction.channel_id in chess_games:
+        await interaction.response.send_message(
+            "There's already a chess game running in this channel!", ephemeral=True
+        )
+        return
+
+    game = ChessView(interaction.user, opponent, interaction.channel_id)
+    chess_games[interaction.channel_id] = game
+
+    content = f"{game.header()}\n{game.board_display()}\n{game.status_line()}"
+    await interaction.response.send_message(content=content, view=game)
+    game.message = await interaction.original_response()
+
+
+# ----------------------------------------------------------------------
+# ROCK PAPER SCISSORS
+# ----------------------------------------------------------------------
+# Both players pick secretly and simultaneously: the challenger gets a private
+# (ephemeral) picker right away, and the opponent gets one after clicking a
+# public "make your choice" button. Neither sees the other's pick until both
+# have chosen, at which point the public message reveals the result.
+
+RPS_BEATS = {"rock": "scissors", "scissors": "paper", "paper": "rock"}
+RPS_EMOJI = {"rock": "🪨", "paper": "📄", "scissors": "✂️"}
+
+
+class RPSGame:
+    def __init__(self, player1: discord.Member, player2: discord.Member):
+        self.player1 = player1
+        self.player2 = player2
+        self.choices: dict[int, str] = {}
+        self.public_message: discord.Message = None
+
+    def both_chosen(self) -> bool:
+        return self.player1.id in self.choices and self.player2.id in self.choices
+
+    async def reveal_result(self):
+        c1 = self.choices[self.player1.id]
+        c2 = self.choices[self.player2.id]
+
+        if c1 == c2:
+            result_text = f"🤝 It's a tie! Both chose {RPS_EMOJI[c1]} {c1.title()}."
+        else:
+            winner = self.player1 if RPS_BEATS[c1] == c2 else self.player2
+            result_text = (
+                f"{self.player1.mention} chose {RPS_EMOJI[c1]} {c1.title()}\n"
+                f"{self.player2.mention} chose {RPS_EMOJI[c2]} {c2.title()}\n\n"
+                f"🎉 {winner.mention} wins!"
+            )
+
+        if self.public_message:
+            try:
+                await self.public_message.edit(
+                    content=f"✊✋✌️ Rock Paper Scissors\n\n{result_text}", view=None
+                )
+            except discord.HTTPException:
+                pass
+
+
+class RPSChoiceView(discord.ui.View):
+    def __init__(self, game: RPSGame, player: discord.Member):
+        super().__init__(timeout=120)
+        self.game = game
+        self.player = player
+
+    async def handle_choice(self, interaction: discord.Interaction, choice: str):
+        if interaction.user.id != self.player.id:
+            await interaction.response.send_message("This isn't your choice to make!", ephemeral=True)
+            return
+        if self.player.id in self.game.choices:
+            await interaction.response.send_message("You already chose!", ephemeral=True)
+            return
+
+        self.game.choices[self.player.id] = choice
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            content=f"You chose {RPS_EMOJI[choice]} {choice.title()}! Waiting for the other player...",
+            view=self,
+        )
+
+        if self.game.both_chosen():
+            await self.game.reveal_result()
+
+    @discord.ui.button(label="Rock", emoji="🪨", style=discord.ButtonStyle.secondary)
+    async def rock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_choice(interaction, "rock")
+
+    @discord.ui.button(label="Paper", emoji="📄", style=discord.ButtonStyle.secondary)
+    async def paper(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_choice(interaction, "paper")
+
+    @discord.ui.button(label="Scissors", emoji="✂️", style=discord.ButtonStyle.secondary)
+    async def scissors(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_choice(interaction, "scissors")
+
+
+class RPSStartView(discord.ui.View):
+    """Public message view — the opponent clicks this to get their own private picker."""
+
+    def __init__(self, game: RPSGame):
+        super().__init__(timeout=120)
+        self.game = game
+
+    @discord.ui.button(label="Make Your Choice", style=discord.ButtonStyle.primary, emoji="🎮")
+    async def choose(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.game.player2.id:
+            await interaction.response.send_message("This challenge isn't for you!", ephemeral=True)
+            return
+        if self.game.player2.id in self.game.choices:
+            await interaction.response.send_message("You already made your choice!", ephemeral=True)
+            return
+
+        view = RPSChoiceView(self.game, self.game.player2)
+        await interaction.response.send_message("Pick your move:", view=view, ephemeral=True)
+
+
+@bot.tree.command(name="rps", description="Challenge someone to Rock Paper Scissors.")
+@app_commands.describe(opponent="Who you want to challenge")
+async def rps_command(interaction: discord.Interaction, opponent: discord.Member):
+    if opponent.id == interaction.user.id:
+        await interaction.response.send_message("You can't challenge yourself!", ephemeral=True)
+        return
+    if opponent.bot:
+        await interaction.response.send_message("You can't challenge a bot!", ephemeral=True)
+        return
+
+    game = RPSGame(interaction.user, opponent)
+
+    challenger_view = RPSChoiceView(game, interaction.user)
+    await interaction.response.send_message("Pick your move:", view=challenger_view, ephemeral=True)
+
+    start_view = RPSStartView(game)
+    public_msg = await interaction.followup.send(
+        f"✊✋✌️ {interaction.user.mention} has challenged {opponent.mention} to Rock Paper Scissors!\n"
+        f"{opponent.mention}, click below to make your secret choice.",
+        view=start_view,
+    )
+    game.public_message = public_msg
+
+
 @bot.tree.command(name="cmds", description="Show all available commands.")
 async def cmds_command(interaction: discord.Interaction):
     embed_en = discord.Embed(
@@ -838,6 +1191,16 @@ async def cmds_command(interaction: discord.Interaction):
     embed_en.add_field(
         name="/tictactoe",
         value="Challenge another user to Tic-Tac-Toe with clickable buttons.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/chess",
+        value="Challenge another user to a full game of chess using dropdown menus to move pieces.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/rps",
+        value="Challenge another user to Rock Paper Scissors. Both pick secretly and simultaneously.",
         inline=False,
     )
     embed_en.add_field(
@@ -908,6 +1271,16 @@ async def cmds_command(interaction: discord.Interaction):
     embed_ar.add_field(
         name="/tictactoe",
         value="تحدَّ شخصاً آخر في لعبة إكس-أو بأزرار قابلة للنقر.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/chess",
+        value="تحدَّ شخصاً آخر في لعبة شطرنج كاملة باستخدام القوائم المنسدلة لتحريك القطع.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/rps",
+        value="تحدَّ شخصاً آخر في لعبة حجر ورقة مقص. كل لاعب يختار بسرية وفي نفس الوقت.",
         inline=False,
     )
     embed_ar.add_field(
