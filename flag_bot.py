@@ -20,12 +20,15 @@ guesses in chat.
 import os
 import re
 import json
+import time
 import random
+import asyncio
 import unicodedata
 from datetime import date
 
 import aiohttp
 import discord
+import yt_dlp
 from discord import app_commands
 from discord.ext import commands
 
@@ -43,6 +46,28 @@ CHEAT_CODE = "123123"
 DEV_USERNAME = "1d_d1"
 
 SCORES_FILE = "scores.json"
+
+# Free API key from https://aistudio.google.com/apikey — no credit card needed.
+# Powers /ask. Without it, /ask will tell users it's not configured.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = "gemini-2.5-flash"
+ASK_COOLDOWN_SECONDS = 8  # per-user cooldown to avoid burning through the free daily quota
+
+# ----------------------------------------------------------------------
+# MUSIC CONFIG
+# ----------------------------------------------------------------------
+
+YTDL_OPTS = {
+    "format": "bestaudio/best",
+    "noplaylist": True,
+    "quiet": True,
+    "no_warnings": True,
+    "default_search": "ytsearch1",
+    "source_address": "0.0.0.0",
+}
+
+FFMPEG_BEFORE_OPTS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+FFMPEG_OPTS = "-vn"
 
 # Free API key from https://developers.giphy.com (instant approval for a
 # personal/test key) needed for /osaka to pull gifs. Without it, /osaka will
@@ -191,11 +216,18 @@ def is_correct_guess(message_content: str, country: dict) -> bool:
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # channel_id -> currently active country dict (or None if no round running)
 active_rounds: dict[int, dict] = {}
+
+# guild_id -> list of {"title": str, "url": str, "requester": str} waiting to play
+song_queues: dict[int, list] = {}
+
+# guild_id -> {"title": str, "requester": str} currently playing, or None
+now_playing: dict[int, dict] = {}
 
 # Global daily challenge state (one shared challenge across the bot, hosted
 # in whichever channel first ran /dailychallenge that day)
@@ -206,6 +238,9 @@ daily_challenge = {
     "winner_id": None,
     "attempted": set(),
 }
+
+# user_id -> unix timestamp of their last /ask call, for cooldown enforcement
+ask_last_used: dict[int, float] = {}
 
 # ----------------------------------------------------------------------
 # SCORE / STREAK PERSISTENCE
@@ -484,6 +519,255 @@ async def osaka_command(interaction: discord.Interaction):
     await interaction.followup.send(gif_url)
 
 
+@bot.tree.command(name="ask", description="Ask the bot's AI a question.")
+@app_commands.describe(question="What do you want to ask?")
+async def ask_command(interaction: discord.Interaction, question: str):
+    if not GEMINI_API_KEY:
+        await interaction.response.send_message(
+            "The bot owner hasn't set up a Gemini API key yet, so `/ask` isn't available. "
+            "(Free key at aistudio.google.com/apikey — add it as the GEMINI_API_KEY variable.)",
+            ephemeral=True,
+        )
+        return
+
+    now = time.time()
+    last_used = ask_last_used.get(interaction.user.id, 0)
+    remaining = ASK_COOLDOWN_SECONDS - (now - last_used)
+    if remaining > 0:
+        await interaction.response.send_message(
+            f"Slow down a bit! Try again in {remaining:.0f}s.", ephemeral=True
+        )
+        return
+    ask_last_used[interaction.user.id] = now
+
+    await interaction.response.defer()
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    headers = {"Content-Type": "application/json"}
+    params = {"key": GEMINI_API_KEY}
+    payload = {
+        "contents": [{"parts": [{"text": question}]}],
+        "generationConfig": {"maxOutputTokens": 500},
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, headers=headers, params=params, json=payload,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                data = await resp.json()
+                if resp.status != 200:
+                    err_msg = data.get("error", {}).get("message", "Unknown error")
+                    await interaction.followup.send(f"AI request failed: {err_msg}")
+                    return
+    except (aiohttp.ClientError, TimeoutError):
+        await interaction.followup.send("Couldn't reach the AI right now, try again in a bit.")
+        return
+
+    try:
+        answer = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError):
+        await interaction.followup.send("The AI didn't return a usable answer — try rephrasing your question.")
+        return
+
+    if len(answer) > 1900:
+        answer = answer[:1900] + "…"
+
+    await interaction.followup.send(f"**{interaction.user.display_name} asked:** {question}\n\n{answer}")
+
+
+# ----------------------------------------------------------------------
+# MUSIC HELPERS
+# ----------------------------------------------------------------------
+
+SPOTIFY_URL_RE = re.compile(r"open\.spotify\.com/(?:intl-\w+/)?track/")
+YOUTUBE_URL_RE = re.compile(r"(youtube\.com|youtu\.be)/")
+
+
+async def resolve_search_query(raw_query: str) -> str:
+    """Turn a Spotify track link into a searchable title; pass everything else through."""
+    if SPOTIFY_URL_RE.search(raw_query):
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://open.spotify.com/oembed",
+                    params={"url": raw_query},
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        title = data.get("title")
+                        if title:
+                            return title
+        except (aiohttp.ClientError, TimeoutError):
+            pass
+        # Fall back to just letting yt-dlp try the raw link, though it likely won't work.
+        return raw_query
+    return raw_query
+
+
+async def extract_track_info(query: str) -> dict | None:
+    """Run yt-dlp (blocking) in a thread and return info about the best match."""
+    loop = asyncio.get_running_loop()
+
+    def _extract():
+        with yt_dlp.YoutubeDL(YTDL_OPTS) as ydl:
+            info = ydl.extract_info(query, download=False)
+            if info and "entries" in info:
+                entries = [e for e in info["entries"] if e]
+                if not entries:
+                    return None
+                info = entries[0]
+            return info
+
+    try:
+        return await loop.run_in_executor(None, _extract)
+    except yt_dlp.utils.DownloadError:
+        return None
+
+
+def play_next_sync(guild_id: int, voice_client: discord.VoiceClient, text_channel: discord.abc.Messageable):
+    """Called (from a background thread via the 'after' callback) to advance the queue."""
+    fut = asyncio.run_coroutine_threadsafe(play_next(guild_id, voice_client, text_channel), bot.loop)
+    try:
+        fut.result()
+    except Exception as e:
+        print(f"Error advancing queue: {e}")
+
+
+async def play_next(guild_id: int, voice_client: discord.VoiceClient, text_channel: discord.abc.Messageable):
+    queue = song_queues.get(guild_id, [])
+
+    if not queue:
+        now_playing[guild_id] = None
+        return
+
+    track = queue.pop(0)
+    now_playing[guild_id] = track
+
+    source = discord.FFmpegPCMAudio(track["stream_url"], before_options=FFMPEG_BEFORE_OPTS, options=FFMPEG_OPTS)
+
+    def after_callback(error):
+        if error:
+            print(f"Player error: {error}")
+        play_next_sync(guild_id, voice_client, text_channel)
+
+    voice_client.play(source, after=after_callback)
+    try:
+        await text_channel.send(f"🎶 Now playing: **{track['title']}** (requested by {track['requester']})")
+    except discord.HTTPException:
+        pass
+
+
+# ----------------------------------------------------------------------
+# MUSIC COMMANDS
+# ----------------------------------------------------------------------
+
+@bot.tree.command(name="play", description="Play a YouTube or Spotify link (or search term) in your voice channel.")
+@app_commands.describe(query="A YouTube link, Spotify track link, or search text")
+async def play_command(interaction: discord.Interaction, query: str):
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        await interaction.response.send_message("Join a voice channel first!", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
+    voice_channel = interaction.user.voice.channel
+    voice_client = interaction.guild.voice_client
+
+    if voice_client is None:
+        try:
+            voice_client = await voice_channel.connect()
+        except discord.ClientException as e:
+            await interaction.followup.send(f"Couldn't join your voice channel: {e}")
+            return
+    elif voice_client.channel != voice_channel:
+        await voice_client.move_to(voice_channel)
+
+    search_query = await resolve_search_query(query.strip())
+    if not (YOUTUBE_URL_RE.search(search_query) or search_query.startswith("http")):
+        search_query = f"ytsearch1:{search_query}"
+
+    info = await extract_track_info(search_query)
+    if not info or "url" not in info:
+        await interaction.followup.send("Couldn't find or play that — try a different link or search term.")
+        return
+
+    track = {
+        "title": info.get("title", "Unknown title"),
+        "stream_url": info["url"],
+        "requester": interaction.user.display_name,
+    }
+
+    guild_id = interaction.guild_id
+    song_queues.setdefault(guild_id, [])
+
+    if voice_client.is_playing() or voice_client.is_paused():
+        song_queues[guild_id].append(track)
+        await interaction.followup.send(f"➕ Added to queue: **{track['title']}**")
+    else:
+        song_queues[guild_id].append(track)
+        await interaction.followup.send(f"🔎 Found: **{track['title']}**")
+        await play_next(guild_id, voice_client, interaction.channel)
+
+
+@bot.tree.command(name="vskip", description="Skip the currently playing song.")
+async def vskip_command(interaction: discord.Interaction):
+    voice_client = interaction.guild.voice_client
+    if not voice_client or not (voice_client.is_playing() or voice_client.is_paused()):
+        await interaction.response.send_message("Nothing is playing right now.", ephemeral=True)
+        return
+
+    voice_client.stop()  # triggers the 'after' callback, which advances the queue
+    await interaction.response.send_message("⏭️ Skipped.")
+
+
+@bot.tree.command(name="stop", description="Stop playback, clear the queue, and leave the voice channel.")
+async def stop_command(interaction: discord.Interaction):
+    voice_client = interaction.guild.voice_client
+    if not voice_client:
+        await interaction.response.send_message("I'm not in a voice channel.", ephemeral=True)
+        return
+
+    guild_id = interaction.guild_id
+    song_queues[guild_id] = []
+    now_playing[guild_id] = None
+    voice_client.stop()
+    await voice_client.disconnect()
+    await interaction.response.send_message("⏹️ Stopped and left the voice channel.")
+
+
+@bot.tree.command(name="queue", description="Show what's up next.")
+async def queue_command(interaction: discord.Interaction):
+    guild_id = interaction.guild_id
+    current = now_playing.get(guild_id)
+    upcoming = song_queues.get(guild_id, [])
+
+    if not current and not upcoming:
+        await interaction.response.send_message("Nothing playing and nothing queued.")
+        return
+
+    lines = []
+    if current:
+        lines.append(f"**Now Playing:** {current['title']} (requested by {current['requester']})")
+    if upcoming:
+        lines.append("\n**Up Next:**")
+        for i, t in enumerate(upcoming[:10], start=1):
+            lines.append(f"{i}. {t['title']} (requested by {t['requester']})")
+
+    await interaction.response.send_message("\n".join(lines))
+
+
+@bot.tree.command(name="nowplaying", description="Show the currently playing song.")
+async def nowplaying_command(interaction: discord.Interaction):
+    current = now_playing.get(interaction.guild_id)
+    if not current:
+        await interaction.response.send_message("Nothing is playing right now.")
+        return
+    await interaction.response.send_message(f"🎶 **{current['title']}** — requested by {current['requester']}")
+
+
 @bot.tree.command(name="cheat", description="Admin only: manually edit a user's leaderboard wins with a code.")
 @app_commands.describe(code="The access code", user="User to edit", wins="New win count to set for this user")
 async def cheat_command(interaction: discord.Interaction, code: str, user: discord.Member, wins: int):
@@ -552,6 +836,36 @@ async def cmds_command(interaction: discord.Interaction):
         inline=False,
     )
     embed_en.add_field(
+        name="/ask",
+        value="Ask the bot's AI anything and get a response.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/play",
+        value="Plays a YouTube link, Spotify track link, or search term in your voice channel. Joins your VC automatically.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/vskip",
+        value="Skips the currently playing song.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/stop",
+        value="Stops playback, clears the queue, and leaves the voice channel.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/queue",
+        value="Shows the current song and what's coming up next.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/nowplaying",
+        value="Shows the currently playing song.",
+        inline=False,
+    )
+    embed_en.add_field(
         name="/cheat",
         value="shhh...youre not supposed to use this only for me :3",
         inline=False,
@@ -604,6 +918,36 @@ async def cmds_command(interaction: discord.Interaction):
     embed_ar.add_field(
         name="/osaka",
         value="يرسل صورة متحركة عشوائية لشخصية أوساكا (أيومو كاسوغا).",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/ask",
+        value="اسأل ذكاء البوت الاصطناعي أي سؤال واحصل على إجابة.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/play",
+        value="يشغّل رابط يوتيوب أو رابط أغنية من سبوتيفاي أو كلمة بحث في قناتك الصوتية. ينضم البوت تلقائياً.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/vskip",
+        value="يتخطى الأغنية الحالية.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/stop",
+        value="يوقف التشغيل، يمسح قائمة الانتظار، ويغادر القناة الصوتية.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/queue",
+        value="يعرض الأغنية الحالية والأغاني القادمة.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/nowplaying",
+        value="يعرض الأغنية التي تُشغَّل حالياً.",
         inline=False,
     )
     embed_ar.add_field(
