@@ -78,7 +78,18 @@ YTDL_OPTS = {
     "no_warnings": True,
     "default_search": "ytsearch1",
     "source_address": "0.0.0.0",
+    # YouTube frequently blocks requests from cloud/datacenter IPs (Railway, AWS, etc.)
+    # with a "Sign in to confirm you're not a bot" error. The android client is less
+    # likely to trigger that check than the default web client.
+    "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
 }
+
+# Optional: path to a cookies.txt file (Netscape format) exported from a real,
+# logged-in YouTube session. This is the most reliable fix if YouTube keeps
+# blocking the bot's requests. See README for how to generate one.
+YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "")
+if YTDLP_COOKIES_FILE and os.path.exists(YTDLP_COOKIES_FILE):
+    YTDL_OPTS["cookiefile"] = YTDLP_COOKIES_FILE
 
 FFMPEG_BEFORE_OPTS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 FFMPEG_OPTS = "-vn"
@@ -683,7 +694,13 @@ async def extract_track_info(query: str) -> dict | None:
 
     try:
         return await loop.run_in_executor(None, _extract)
-    except yt_dlp.utils.DownloadError:
+    except yt_dlp.utils.DownloadError as e:
+        # Printed to the console/Railway logs so the real cause is visible instead
+        # of just showing a generic "couldn't find or play that" to the user.
+        print(f"yt-dlp extraction failed for query '{query}': {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error extracting '{query}': {e}")
         return None
 
 

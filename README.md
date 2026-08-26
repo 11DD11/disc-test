@@ -73,6 +73,26 @@ message and the bot announces the winner.
 3. **Voice encryption library** — Discord is rolling out mandatory end-to-end encryption for voice (called DAVE). Newer discord.py versions need a companion package called `davey` to connect to voice at all — without it you'll get a "davey library needed" error. This is already in `requirements.txt`, so a fresh install should just work; if you're updating an existing deployment, make sure `requirements.txt` gets re-uploaded too so Railway installs it.
 4. **A quick legal note:** pulling audio from YouTube this way (via `yt-dlp`) is technically against YouTube's Terms of Service, even though it's extremely common practice for hobby Discord bots. Worth knowing if you ever run this at a larger scale.
 
+## If /play or /lofi say "couldn't find or play that"
+
+This almost always means YouTube is blocking the request, not that anything is broken in the code. Two common causes:
+
+**1. yt-dlp is outdated.** YouTube changes things often enough that yt-dlp needs frequent updates to keep working. `requirements.txt` now installs the latest version on every deploy (no version pin), so redeploying should pull a fresh copy automatically.
+
+**2. YouTube is blocking Railway's IP address.** YouTube aggressively blocks requests coming from cloud/datacenter IPs (Railway, AWS, etc.) with a "Sign in to confirm you're not a bot" error — this has nothing to do with your bot's code, it's YouTube fingerprinting the server it's hosted on. The code now tries the Android client first, which is less likely to trigger this, but it isn't foolproof.
+
+**To check which of these is happening:** open your Railway project → Deployments → View Logs, then run `/play` again and look for a line starting with `yt-dlp extraction failed for query`. It'll tell you the exact error YouTube returned.
+
+**If it's still blocking you, the reliable fix is cookies from a real YouTube account:**
+1. Log into YouTube in your browser on a real account
+2. Install a "cookies.txt" export extension (e.g. "Get cookies.txt LOCALLY" for Chrome/Firefox)
+3. Export cookies for youtube.com as a `cookies.txt` file
+4. Add this file to your GitHub repo (careful: it contains session data, so only do this in a private repo)
+5. Set an environment variable `YTDLP_COOKIES_FILE` pointing to its path (e.g. `cookies.txt` if it's in the repo root)
+6. Redeploy
+
+This makes requests look like they're coming from a real logged-in browser session instead of a bare server, which YouTube trusts far more.
+
 ## Bot status / Rich Presence
 
 The bot shows a custom "Watching just watching :3" status, and clicking on its profile shows an expanded Rich Presence card with Silksong artwork and details.
