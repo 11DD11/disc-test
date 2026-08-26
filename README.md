@@ -70,7 +70,8 @@ message and the bot announces the winner.
 **Required setup for music to work:**
 1. **Bot permissions** — when generating your invite URL (OAuth2 → URL Generator), make sure `Connect` and `Speak` are checked under Bot Permissions, in addition to the ones from step 2 in Setup above.
 2. **System dependencies** — voice playback needs `ffmpeg` and `libopus0` installed on the host, which pip can't provide. If you're on Railway, the included `nixpacks.toml` file handles this automatically — just make sure it's uploaded to your repo alongside the other files. If running locally, install ffmpeg yourself (e.g. `sudo apt install ffmpeg libopus0` on Linux, `brew install ffmpeg opus` on Mac).
-3. **A quick legal note:** pulling audio from YouTube this way (via `yt-dlp`) is technically against YouTube's Terms of Service, even though it's extremely common practice for hobby Discord bots. Worth knowing if you ever run this at a larger scale.
+3. **Voice encryption library** — Discord is rolling out mandatory end-to-end encryption for voice (called DAVE). Newer discord.py versions need a companion package called `dave.py` to connect to voice at all — without it you'll get a "davey library needed" error. This is already in `requirements.txt`, so a fresh install should just work; if you're updating an existing deployment, make sure `requirements.txt` gets re-uploaded too so Railway installs it.
+4. **A quick legal note:** pulling audio from YouTube this way (via `yt-dlp`) is technically against YouTube's Terms of Service, even though it's extremely common practice for hobby Discord bots. Worth knowing if you ever run this at a larger scale.
 
 ## Setting up /osaka (Giphy API key)
 1. Go to https://developers.giphy.com and create a free account
