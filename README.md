@@ -75,23 +75,23 @@ message and the bot announces the winner.
 
 ## If /play or /lofi say "couldn't find or play that"
 
-This almost always means YouTube is blocking the request, not that anything is broken in the code. Two common causes:
+**Confirmed cause for this bot:** YouTube is blocking Railway's server IP with a "Sign in to confirm you're not a bot" error. This is YouTube fingerprinting cloud/datacenter IPs in general — it's not a bug in the bot's code, and it isn't personal to your server.
 
-**1. yt-dlp is outdated.** YouTube changes things often enough that yt-dlp needs frequent updates to keep working. `requirements.txt` now installs the latest version on every deploy (no version pin), so redeploying should pull a fresh copy automatically.
+**The fix: use cookies from a real, logged-in YouTube account.**
 
-**2. YouTube is blocking Railway's IP address.** YouTube aggressively blocks requests coming from cloud/datacenter IPs (Railway, AWS, etc.) with a "Sign in to confirm you're not a bot" error — this has nothing to do with your bot's code, it's YouTube fingerprinting the server it's hosted on. The code now tries the Android client first, which is less likely to trigger this, but it isn't foolproof.
+⚠️ **Do not commit a cookies.txt file to your GitHub repo.** It contains live session data — anyone who gets it can access that YouTube account. Use the environment variable method below instead, which keeps the cookie data out of your repo entirely.
 
-**To check which of these is happening:** open your Railway project → Deployments → View Logs, then run `/play` again and look for a line starting with `yt-dlp extraction failed for query`. It'll tell you the exact error YouTube returned.
+**Steps:**
+1. Log into YouTube in your browser using an account you're comfortable using for this (a secondary/throwaway account is a reasonable choice, not your main one)
+2. Install a cookie-export extension — e.g. **"Get cookies.txt LOCALLY"** for Chrome or Firefox
+3. Go to youtube.com, make sure you're logged in, then use the extension to export cookies for the site. It downloads a `cookies.txt` file in Netscape format.
+4. Open that file in a text editor and copy the **entire contents**
+5. In Railway → your project → **Variables**, add a new variable:
+   - Name: `YTDLP_COOKIES_CONTENT`
+   - Value: paste the entire file contents
+6. Redeploy. The bot writes this to a temporary file on startup automatically — you'll see `Using YouTube cookies file for yt-dlp requests.` in the logs if it picked it up correctly.
 
-**If it's still blocking you, the reliable fix is cookies from a real YouTube account:**
-1. Log into YouTube in your browser on a real account
-2. Install a "cookies.txt" export extension (e.g. "Get cookies.txt LOCALLY" for Chrome/Firefox)
-3. Export cookies for youtube.com as a `cookies.txt` file
-4. Add this file to your GitHub repo (careful: it contains session data, so only do this in a private repo)
-5. Set an environment variable `YTDLP_COOKIES_FILE` pointing to its path (e.g. `cookies.txt` if it's in the repo root)
-6. Redeploy
-
-This makes requests look like they're coming from a real logged-in browser session instead of a bare server, which YouTube trusts far more.
+**Heads up:** YouTube cookies expire periodically (session-dependent, often a few weeks to a couple months). If `/play` starts failing again down the line with the same "Sign in to confirm" error, just repeat steps 2–6 with a fresh export.
 
 ## Bot status / Rich Presence
 

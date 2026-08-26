@@ -84,12 +84,29 @@ YTDL_OPTS = {
     "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
 }
 
-# Optional: path to a cookies.txt file (Netscape format) exported from a real,
-# logged-in YouTube session. This is the most reliable fix if YouTube keeps
-# blocking the bot's requests. See README for how to generate one.
+# Optional: cookies from a real, logged-in YouTube session, needed when YouTube
+# blocks the bot's server with a "Sign in to confirm you're not a bot" error.
+#
+# Two ways to provide this:
+#   1. (Recommended) Set YTDLP_COOKIES_CONTENT to the full contents of a cookies.txt
+#      file as an environment variable. The bot writes it to a local file at startup.
+#      This keeps the actual cookie data out of your GitHub repo entirely.
+#   2. Set YTDLP_COOKIES_FILE to a path to a cookies.txt file already on disk.
+#
+# See README for how to export cookies.txt from your browser.
+YTDLP_COOKIES_CONTENT = os.environ.get("YTDLP_COOKIES_CONTENT", "")
 YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "")
+
+if YTDLP_COOKIES_CONTENT:
+    YTDLP_COOKIES_FILE = "/tmp/yt_cookies.txt"
+    with open(YTDLP_COOKIES_FILE, "w", encoding="utf-8") as f:
+        f.write(YTDLP_COOKIES_CONTENT)
+
 if YTDLP_COOKIES_FILE and os.path.exists(YTDLP_COOKIES_FILE):
     YTDL_OPTS["cookiefile"] = YTDLP_COOKIES_FILE
+    print("Using YouTube cookies file for yt-dlp requests.")
+else:
+    print("No YouTube cookies configured — requests may get blocked by YouTube's bot detection.")
 
 FFMPEG_BEFORE_OPTS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 FFMPEG_OPTS = "-vn"
