@@ -69,6 +69,10 @@ YTDL_OPTS = {
 FFMPEG_BEFORE_OPTS = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 FFMPEG_OPTS = "-vn"
 
+# Default 24/7 lofi livestream (Lofi Girl's long-running stream). Can be overridden
+# per-use via the /lofi command's optional "link" parameter.
+DEFAULT_LOFI_STREAM = "https://www.youtube.com/watch?v=jfKfPfyJRdk"
+
 # Free API key from https://developers.giphy.com (instant approval for a
 # personal/test key) needed for /osaka to pull gifs. Without it, /osaka will
 # tell users it's not configured.
@@ -220,6 +224,20 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    """Safety net: ensures a command never leaves the user stuck on 'thinking...' forever."""
+    print(f"Command error in /{interaction.command.name if interaction.command else '?'}: {error}")
+    message = "Something went wrong running that command. Please try again."
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.HTTPException:
+        pass
+
 # channel_id -> currently active country dict (or None if no round running)
 active_rounds: dict[int, dict] = {}
 
@@ -228,6 +246,15 @@ song_queues: dict[int, list] = {}
 
 # guild_id -> {"title": str, "requester": str} currently playing, or None
 now_playing: dict[int, dict] = {}
+
+# guild_id -> True while 24/7 lofi mode is active for that guild
+lofi_mode: dict[int, bool] = {}
+
+# guild_id -> the stream link currently used for that guild's lofi mode
+lofi_stream_link: dict[int, str] = {}
+
+# guild_id -> volume multiplier, 0.0 to 2.0 (default 1.0 = 100%)
+guild_volume: dict[int, float] = {}
 
 # Global daily challenge state (one shared challenge across the bot, hosted
 # in whichever channel first ran /dailychallenge that day)
@@ -627,13 +654,28 @@ async def extract_track_info(query: str) -> dict | None:
         return None
 
 
-def play_next_sync(guild_id: int, voice_client: discord.VoiceClient, text_channel: discord.abc.Messageable):
-    """Called (from a background thread via the 'after' callback) to advance the queue."""
-    fut = asyncio.run_coroutine_threadsafe(play_next(guild_id, voice_client, text_channel), bot.loop)
-    try:
-        fut.result()
-    except Exception as e:
-        print(f"Error advancing queue: {e}")
+def get_volume(guild_id: int) -> float:
+    return guild_volume.get(guild_id, 1.0)
+
+
+def make_source(stream_url: str, guild_id: int) -> discord.PCMVolumeTransformer:
+    raw = discord.FFmpegPCMAudio(stream_url, before_options=FFMPEG_BEFORE_OPTS, options=FFMPEG_OPTS)
+    return discord.PCMVolumeTransformer(raw, volume=get_volume(guild_id))
+
+
+def after_callback_factory(guild_id: int, voice_client: discord.VoiceClient, text_channel: discord.abc.Messageable):
+    def after_callback(error):
+        if error:
+            print(f"Player error: {error}")
+        if lofi_mode.get(guild_id):
+            fut = asyncio.run_coroutine_threadsafe(play_lofi(guild_id, voice_client, text_channel), bot.loop)
+        else:
+            fut = asyncio.run_coroutine_threadsafe(play_next(guild_id, voice_client, text_channel), bot.loop)
+        try:
+            fut.result()
+        except Exception as e:
+            print(f"Error advancing playback: {e}")
+    return after_callback
 
 
 async def play_next(guild_id: int, voice_client: discord.VoiceClient, text_channel: discord.abc.Messageable):
@@ -646,18 +688,37 @@ async def play_next(guild_id: int, voice_client: discord.VoiceClient, text_chann
     track = queue.pop(0)
     now_playing[guild_id] = track
 
-    source = discord.FFmpegPCMAudio(track["stream_url"], before_options=FFMPEG_BEFORE_OPTS, options=FFMPEG_OPTS)
+    source = make_source(track["stream_url"], guild_id)
+    voice_client.play(source, after=after_callback_factory(guild_id, voice_client, text_channel))
 
-    def after_callback(error):
-        if error:
-            print(f"Player error: {error}")
-        play_next_sync(guild_id, voice_client, text_channel)
-
-    voice_client.play(source, after=after_callback)
     try:
         await text_channel.send(f"🎶 Now playing: **{track['title']}** (requested by {track['requester']})")
     except discord.HTTPException:
         pass
+
+
+async def play_lofi(guild_id: int, voice_client: discord.VoiceClient, text_channel: discord.abc.Messageable):
+    """(Re)starts the 24/7 lofi stream for a guild. Called on /lofi and to loop after it ends."""
+    stream_link = lofi_stream_link.get(guild_id, DEFAULT_LOFI_STREAM)
+    info = await extract_track_info(stream_link)
+
+    if not info or "url" not in info:
+        lofi_mode[guild_id] = False
+        try:
+            await text_channel.send("⚠️ Couldn't load the lofi stream — turning lofi mode off.")
+        except discord.HTTPException:
+            pass
+        return
+
+    track = {
+        "title": info.get("title", "Lofi Radio"),
+        "stream_url": info["url"],
+        "requester": "24/7 Lofi Radio",
+    }
+    now_playing[guild_id] = track
+
+    source = make_source(track["stream_url"], guild_id)
+    voice_client.play(source, after=after_callback_factory(guild_id, voice_client, text_channel))
 
 
 # ----------------------------------------------------------------------
@@ -676,20 +737,32 @@ async def play_command(interaction: discord.Interaction, query: str):
     voice_channel = interaction.user.voice.channel
     voice_client = interaction.guild.voice_client
 
-    if voice_client is None:
-        try:
-            voice_client = await voice_channel.connect()
-        except discord.ClientException as e:
-            await interaction.followup.send(f"Couldn't join your voice channel: {e}")
-            return
-    elif voice_client.channel != voice_channel:
-        await voice_client.move_to(voice_channel)
+    try:
+        if voice_client is None:
+            voice_client = await voice_channel.connect(timeout=15, reconnect=True)
+        elif voice_client.channel != voice_channel:
+            await voice_client.move_to(voice_channel)
+    except asyncio.TimeoutError:
+        await interaction.followup.send(
+            "⚠️ Timed out connecting to voice. This usually means the server hosting the bot "
+            "is blocking the UDP traffic Discord voice needs — common on some free hosting tiers. "
+            "Try again, or check your host's networking docs for UDP support."
+        )
+        return
+    except Exception as e:
+        await interaction.followup.send(f"Couldn't join your voice channel: {e}")
+        return
 
-    search_query = await resolve_search_query(query.strip())
-    if not (YOUTUBE_URL_RE.search(search_query) or search_query.startswith("http")):
-        search_query = f"ytsearch1:{search_query}"
+    try:
+        search_query = await resolve_search_query(query.strip())
+        if not (YOUTUBE_URL_RE.search(search_query) or search_query.startswith("http")):
+            search_query = f"ytsearch1:{search_query}"
 
-    info = await extract_track_info(search_query)
+        info = await extract_track_info(search_query)
+    except Exception as e:
+        await interaction.followup.send(f"Something went wrong looking that up: {e}")
+        return
+
     if not info or "url" not in info:
         await interaction.followup.send("Couldn't find or play that — try a different link or search term.")
         return
@@ -703,13 +776,21 @@ async def play_command(interaction: discord.Interaction, query: str):
     guild_id = interaction.guild_id
     song_queues.setdefault(guild_id, [])
 
-    if voice_client.is_playing() or voice_client.is_paused():
+    # An explicit /play takes priority over an ongoing 24/7 lofi loop.
+    was_lofi = lofi_mode.get(guild_id, False)
+    lofi_mode[guild_id] = False
+
+    if not was_lofi and (voice_client.is_playing() or voice_client.is_paused()):
         song_queues[guild_id].append(track)
         await interaction.followup.send(f"➕ Added to queue: **{track['title']}**")
     else:
         song_queues[guild_id].append(track)
-        await interaction.followup.send(f"🔎 Found: **{track['title']}**")
-        await play_next(guild_id, voice_client, interaction.channel)
+        if was_lofi:
+            voice_client.stop()  # cuts the lofi stream; after-callback will now pull from the queue
+            await interaction.followup.send(f"🔎 Lofi paused — now playing: **{track['title']}**")
+        else:
+            await interaction.followup.send(f"🔎 Found: **{track['title']}**")
+            await play_next(guild_id, voice_client, interaction.channel)
 
 
 @bot.tree.command(name="vskip", description="Skip the currently playing song.")
@@ -733,6 +814,7 @@ async def stop_command(interaction: discord.Interaction):
     guild_id = interaction.guild_id
     song_queues[guild_id] = []
     now_playing[guild_id] = None
+    lofi_mode[guild_id] = False
     voice_client.stop()
     await voice_client.disconnect()
     await interaction.response.send_message("⏹️ Stopped and left the voice channel.")
@@ -766,6 +848,174 @@ async def nowplaying_command(interaction: discord.Interaction):
         await interaction.response.send_message("Nothing is playing right now.")
         return
     await interaction.response.send_message(f"🎶 **{current['title']}** — requested by {current['requester']}")
+
+
+@bot.tree.command(name="join", description="Move the bot to a specific voice channel (stops any 24/7 lofi loop).")
+@app_commands.describe(channel="Voice channel to join")
+async def join_command(interaction: discord.Interaction, channel: discord.VoiceChannel):
+    guild_id = interaction.guild_id
+    voice_client = interaction.guild.voice_client
+
+    await interaction.response.defer()
+
+    lofi_mode[guild_id] = False
+    song_queues[guild_id] = []
+    now_playing[guild_id] = None
+
+    try:
+        if voice_client is None:
+            await channel.connect(timeout=15, reconnect=True)
+        else:
+            voice_client.stop()
+            await voice_client.move_to(channel)
+    except asyncio.TimeoutError:
+        await interaction.followup.send(
+            "⚠️ Timed out connecting to voice. This usually means the server hosting the bot "
+            "is blocking the UDP traffic Discord voice needs — common on some free hosting tiers."
+        )
+        return
+    except Exception as e:
+        await interaction.followup.send(f"Couldn't join {channel.mention}: {e}")
+        return
+
+    await interaction.followup.send(f"👋 Joined {channel.mention}.")
+
+
+@bot.tree.command(name="lofi", description="Play 24/7 lofi radio in a voice channel until moved elsewhere.")
+@app_commands.describe(
+    channel="Voice channel to play lofi in",
+    link="Optional: your own YouTube livestream/link instead of the default lofi radio",
+)
+async def lofi_command(interaction: discord.Interaction, channel: discord.VoiceChannel, link: str = None):
+    guild_id = interaction.guild_id
+    voice_client = interaction.guild.voice_client
+
+    await interaction.response.defer()
+
+    try:
+        if voice_client is None:
+            voice_client = await channel.connect(timeout=15, reconnect=True)
+        elif voice_client.channel != channel:
+            voice_client.stop()
+            await voice_client.move_to(channel)
+        else:
+            voice_client.stop()
+    except asyncio.TimeoutError:
+        await interaction.followup.send(
+            "⚠️ Timed out connecting to voice. This usually means the server hosting the bot "
+            "is blocking the UDP traffic Discord voice needs — common on some free hosting tiers."
+        )
+        return
+    except Exception as e:
+        await interaction.followup.send(f"Couldn't join {channel.mention}: {e}")
+        return
+
+    lofi_mode[guild_id] = True
+    lofi_stream_link[guild_id] = link.strip() if link else DEFAULT_LOFI_STREAM
+    song_queues[guild_id] = []
+
+    await interaction.followup.send(
+        f"🌙 Starting 24/7 lofi radio in {channel.mention}. Use `/join` to move me elsewhere, "
+        f"or `/play` to interrupt with a specific song."
+    )
+
+    try:
+        await play_lofi(guild_id, voice_client, interaction.channel)
+    except Exception as e:
+        await interaction.channel.send(f"⚠️ Couldn't start the lofi stream: {e}")
+
+
+# ----------------------------------------------------------------------
+# CONTROL PANEL
+# ----------------------------------------------------------------------
+
+def build_panel_embed(guild_id: int) -> discord.Embed:
+    guild = bot.get_guild(guild_id)
+    voice_client = guild.voice_client if guild else None
+    current = now_playing.get(guild_id)
+    vol_pct = int(get_volume(guild_id) * 100)
+    mode = "🌙 24/7 Lofi" if lofi_mode.get(guild_id) else "🎵 Normal queue"
+    queue_len = len(song_queues.get(guild_id, []))
+
+    if current:
+        state = "⏸️ Paused" if voice_client and voice_client.is_paused() else "▶️ Playing"
+        description = f"{state}: **{current['title']}**\nRequested by {current['requester']}"
+    else:
+        description = "Nothing is playing."
+
+    embed = discord.Embed(title="🎛️ Music Control Panel", description=description, color=discord.Color.purple())
+    embed.add_field(name="Volume", value=f"{vol_pct}%", inline=True)
+    embed.add_field(name="Mode", value=mode, inline=True)
+    embed.add_field(name="Queue", value=f"{queue_len} waiting", inline=True)
+    return embed
+
+
+class MusicControlView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+
+    async def refresh(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(embed=build_panel_embed(self.guild_id), view=self)
+
+    @discord.ui.button(label="Play/Pause", emoji="⏯️", style=discord.ButtonStyle.primary)
+    async def play_pause(self, interaction: discord.Interaction, button: discord.ui.Button):
+        voice_client = interaction.guild.voice_client
+        if not voice_client:
+            await interaction.response.send_message("Not connected to a voice channel.", ephemeral=True)
+            return
+        if voice_client.is_playing():
+            voice_client.pause()
+        elif voice_client.is_paused():
+            voice_client.resume()
+        else:
+            await interaction.response.send_message("Nothing is playing right now.", ephemeral=True)
+            return
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Skip", emoji="⏭️", style=discord.ButtonStyle.secondary)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        voice_client = interaction.guild.voice_client
+        if voice_client and (voice_client.is_playing() or voice_client.is_paused()):
+            voice_client.stop()
+            await asyncio.sleep(0.75)  # let the after-callback update now_playing first
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Vol −", emoji="🔉", style=discord.ButtonStyle.secondary)
+    async def vol_down(self, interaction: discord.Interaction, button: discord.ui.Button):
+        new_vol = max(0.0, get_volume(self.guild_id) - 0.1)
+        guild_volume[self.guild_id] = new_vol
+        voice_client = interaction.guild.voice_client
+        if voice_client and voice_client.source:
+            voice_client.source.volume = new_vol
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Vol +", emoji="🔊", style=discord.ButtonStyle.secondary)
+    async def vol_up(self, interaction: discord.Interaction, button: discord.ui.Button):
+        new_vol = min(2.0, get_volume(self.guild_id) + 0.1)
+        guild_volume[self.guild_id] = new_vol
+        voice_client = interaction.guild.voice_client
+        if voice_client and voice_client.source:
+            voice_client.source.volume = new_vol
+        await self.refresh(interaction)
+
+    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger)
+    async def stop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        voice_client = interaction.guild.voice_client
+        guild_id = self.guild_id
+        song_queues[guild_id] = []
+        now_playing[guild_id] = None
+        lofi_mode[guild_id] = False
+        if voice_client:
+            voice_client.stop()
+            await voice_client.disconnect()
+        await self.refresh(interaction)
+
+
+@bot.tree.command(name="panel", description="Show an interactive music control panel (volume, play/pause, skip, stop).")
+async def panel_command(interaction: discord.Interaction):
+    view = MusicControlView(interaction.guild_id)
+    await interaction.response.send_message(embed=build_panel_embed(interaction.guild_id), view=view)
 
 
 @bot.tree.command(name="cheat", description="Admin only: manually edit a user's leaderboard wins with a code.")
@@ -866,6 +1116,21 @@ async def cmds_command(interaction: discord.Interaction):
         inline=False,
     )
     embed_en.add_field(
+        name="/join",
+        value="Moves the bot into a specific voice channel (stops any 24/7 lofi loop and clears the queue).",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/lofi",
+        value="Plays 24/7 lofi radio in a chosen voice channel — keeps looping until moved with /join or interrupted with /play.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/panel",
+        value="Shows an interactive control panel with play/pause, skip, volume, and stop buttons.",
+        inline=False,
+    )
+    embed_en.add_field(
         name="/cheat",
         value="shhh...youre not supposed to use this only for me :3",
         inline=False,
@@ -948,6 +1213,21 @@ async def cmds_command(interaction: discord.Interaction):
     embed_ar.add_field(
         name="/nowplaying",
         value="يعرض الأغنية التي تُشغَّل حالياً.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/join",
+        value="ينقل البوت إلى قناة صوتية محددة (يوقف أي تشغيل لوفاي دائم ويمسح قائمة الانتظار).",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/lofi",
+        value="يشغّل إذاعة لوفاي على مدار الساعة في القناة الصوتية المختارة — يستمر حتى يُنقل البوت بـ /join أو يُقاطَع بـ /play.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/panel",
+        value="يعرض لوحة تحكم تفاعلية بأزرار تشغيل/إيقاف مؤقت، تخطي، مستوى الصوت، وإيقاف.",
         inline=False,
     )
     embed_ar.add_field(

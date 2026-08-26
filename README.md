@@ -61,6 +61,9 @@ message and the bot announces the winner.
 - `/vskip` — skips the current song
 - `/stop` — stops playback, clears the queue, and leaves the voice channel
 - `/queue` / `/nowplaying` — see above
+- `/join <channel>` — moves the bot into a specific voice channel directly. This also stops any active 24/7 lofi loop and clears the queue.
+- `/lofi <channel> [link]` — starts a 24/7 lofi radio loop in the given voice channel. Plays a default lofi livestream (or your own YouTube link if you pass one) on repeat indefinitely, until you move the bot with `/join` or interrupt it with `/play`.
+- `/panel` — posts an interactive control panel with buttons: ⏯️ Play/Pause, ⏭️ Skip, 🔉/🔊 Volume, ⏹️ Stop. Volume adjusts live without restarting the current track. Note: this panel only works while the bot process stays running — if Railway redeploys, run `/panel` again to get a fresh working one.
 
 **How Spotify links work:** Spotify doesn't allow any app to stream actual audio through its API — only official Spotify apps can do that. So `/play` reads the track's public title from Spotify's embed metadata (no API key needed) and searches YouTube for that title, then plays the best match. This works well for popular/official tracks but occasionally picks a cover or lyric video if the exact original isn't easy to find. Only single-track links are supported, not playlists or albums.
 
