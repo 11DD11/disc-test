@@ -28,7 +28,6 @@ from datetime import date
 
 import aiohttp
 import discord
-import yt_dlp
 from discord import app_commands
 from discord.ext import commands
 
@@ -63,10 +62,6 @@ PRESENCE_SMALL_IMAGE_TEXT = "Hornet"
 
 # Free API key from https://aistudio.google.com/apikey — no credit card needed.
 # Powers /ask. Without it, /ask will tell users it's not configured.
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.5-flash"
-ASK_COOLDOWN_SECONDS = 8  # per-user cooldown to avoid burning through the free daily quota
-
 # ----------------------------------------------------------------------
 # MUSIC CONFIG
 # ----------------------------------------------------------------------
@@ -262,7 +257,6 @@ def is_correct_guess(message_content: str, country: dict) -> bool:
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-intents.voice_states = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -307,9 +301,6 @@ daily_challenge = {
     "winner_id": None,
     "attempted": set(),
 }
-
-# user_id -> unix timestamp of their last /ask call, for cooldown enforcement
-ask_last_used: dict[int, float] = {}
 
 # ----------------------------------------------------------------------
 # SCORE / STREAK PERSISTENCE
@@ -610,479 +601,7 @@ async def osaka_command(interaction: discord.Interaction):
 @bot.tree.command(name="ask", description="Ask the bot's AI a question.")
 @app_commands.describe(question="What do you want to ask?")
 async def ask_command(interaction: discord.Interaction, question: str):
-    if not GEMINI_API_KEY:
-        await interaction.response.send_message(
-            "The bot owner hasn't set up a Gemini API key yet, so `/ask` isn't available. "
-            "(Free key at aistudio.google.com/apikey — add it as the GEMINI_API_KEY variable.)",
-            ephemeral=True,
-        )
-        return
-
-    now = time.time()
-    last_used = ask_last_used.get(interaction.user.id, 0)
-    remaining = ASK_COOLDOWN_SECONDS - (now - last_used)
-    if remaining > 0:
-        await interaction.response.send_message(
-            f"Slow down a bit! Try again in {remaining:.0f}s.", ephemeral=True
-        )
-        return
-    ask_last_used[interaction.user.id] = now
-
-    await interaction.response.defer()
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    headers = {"Content-Type": "application/json"}
-    params = {"key": GEMINI_API_KEY}
-    payload = {
-        "contents": [{"parts": [{"text": question}]}],
-        "generationConfig": {"maxOutputTokens": 500},
-    }
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url, headers=headers, params=params, json=payload,
-                timeout=aiohttp.ClientTimeout(total=20),
-            ) as resp:
-                data = await resp.json()
-                if resp.status != 200:
-                    err_msg = data.get("error", {}).get("message", "Unknown error")
-                    await interaction.followup.send(f"AI request failed: {err_msg}")
-                    return
-    except (aiohttp.ClientError, TimeoutError):
-        await interaction.followup.send("Couldn't reach the AI right now, try again in a bit.")
-        return
-
-    try:
-        answer = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError):
-        await interaction.followup.send("The AI didn't return a usable answer — try rephrasing your question.")
-        return
-
-    if len(answer) > 1900:
-        answer = answer[:1900] + "…"
-
-    await interaction.followup.send(f"**{interaction.user.display_name} asked:** {question}\n\n{answer}")
-
-
-# ----------------------------------------------------------------------
-# MUSIC HELPERS
-# ----------------------------------------------------------------------
-
-SPOTIFY_URL_RE = re.compile(r"open\.spotify\.com/(?:intl-\w+/)?track/")
-YOUTUBE_URL_RE = re.compile(r"(youtube\.com|youtu\.be)/")
-
-
-async def resolve_search_query(raw_query: str) -> str:
-    """Turn a Spotify track link into a searchable title; pass everything else through."""
-    if SPOTIFY_URL_RE.search(raw_query):
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    "https://open.spotify.com/oembed",
-                    params={"url": raw_query},
-                    timeout=aiohttp.ClientTimeout(total=8),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        title = data.get("title")
-                        if title:
-                            return title
-        except (aiohttp.ClientError, TimeoutError):
-            pass
-        # Fall back to just letting yt-dlp try the raw link, though it likely won't work.
-        return raw_query
-    return raw_query
-
-
-async def extract_track_info(query: str) -> dict | None:
-    """Run yt-dlp (blocking) in a thread and return info about the best match."""
-    loop = asyncio.get_running_loop()
-
-    def _extract():
-        with yt_dlp.YoutubeDL(YTDL_OPTS) as ydl:
-            info = ydl.extract_info(query, download=False)
-            if info and "entries" in info:
-                entries = [e for e in info["entries"] if e]
-                if not entries:
-                    return None
-                info = entries[0]
-            return info
-
-    try:
-        return await loop.run_in_executor(None, _extract)
-    except yt_dlp.utils.DownloadError as e:
-        # Printed to the console/Railway logs so the real cause is visible instead
-        # of just showing a generic "couldn't find or play that" to the user.
-        print(f"yt-dlp extraction failed for query '{query}': {e}")
-        return None
-    except Exception as e:
-        print(f"Unexpected error extracting '{query}': {e}")
-        return None
-
-
-def get_volume(guild_id: int) -> float:
-    return guild_volume.get(guild_id, 1.0)
-
-
-def make_source(stream_url: str, guild_id: int) -> discord.PCMVolumeTransformer:
-    raw = discord.FFmpegPCMAudio(stream_url, before_options=FFMPEG_BEFORE_OPTS, options=FFMPEG_OPTS)
-    return discord.PCMVolumeTransformer(raw, volume=get_volume(guild_id))
-
-
-def after_callback_factory(guild_id: int, voice_client: discord.VoiceClient, text_channel: discord.abc.Messageable):
-    def after_callback(error):
-        if error:
-            print(f"Player error: {error}")
-        if lofi_mode.get(guild_id):
-            fut = asyncio.run_coroutine_threadsafe(play_lofi(guild_id, voice_client, text_channel), bot.loop)
-        else:
-            fut = asyncio.run_coroutine_threadsafe(play_next(guild_id, voice_client, text_channel), bot.loop)
-        try:
-            fut.result()
-        except Exception as e:
-            print(f"Error advancing playback: {e}")
-    return after_callback
-
-
-async def play_next(guild_id: int, voice_client: discord.VoiceClient, text_channel: discord.abc.Messageable):
-    queue = song_queues.get(guild_id, [])
-
-    if not queue:
-        now_playing[guild_id] = None
-        return
-
-    track = queue.pop(0)
-    now_playing[guild_id] = track
-
-    source = make_source(track["stream_url"], guild_id)
-    voice_client.play(source, after=after_callback_factory(guild_id, voice_client, text_channel))
-
-    try:
-        await text_channel.send(f"🎶 Now playing: **{track['title']}** (requested by {track['requester']})")
-    except discord.HTTPException:
-        pass
-
-
-async def play_lofi(guild_id: int, voice_client: discord.VoiceClient, text_channel: discord.abc.Messageable):
-    """(Re)starts the 24/7 lofi stream for a guild. Called on /lofi and to loop after it ends."""
-    stream_link = lofi_stream_link.get(guild_id, DEFAULT_LOFI_STREAM)
-    info = await extract_track_info(stream_link)
-
-    if not info or "url" not in info:
-        lofi_mode[guild_id] = False
-        try:
-            await text_channel.send("⚠️ Couldn't load the lofi stream — turning lofi mode off.")
-        except discord.HTTPException:
-            pass
-        return
-
-    track = {
-        "title": info.get("title", "Lofi Radio"),
-        "stream_url": info["url"],
-        "requester": "24/7 Lofi Radio",
-    }
-    now_playing[guild_id] = track
-
-    source = make_source(track["stream_url"], guild_id)
-    voice_client.play(source, after=after_callback_factory(guild_id, voice_client, text_channel))
-
-
-# ----------------------------------------------------------------------
-# MUSIC COMMANDS
-# ----------------------------------------------------------------------
-
-@bot.tree.command(name="play", description="Play a YouTube or Spotify link (or search term) in your voice channel.")
-@app_commands.describe(query="A YouTube link, Spotify track link, or search text")
-async def play_command(interaction: discord.Interaction, query: str):
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("Join a voice channel first!", ephemeral=True)
-        return
-
-    await interaction.response.defer()
-
-    voice_channel = interaction.user.voice.channel
-    voice_client = interaction.guild.voice_client
-
-    try:
-        if voice_client is None:
-            voice_client = await voice_channel.connect(timeout=15, reconnect=True)
-        elif voice_client.channel != voice_channel:
-            await voice_client.move_to(voice_channel)
-    except asyncio.TimeoutError:
-        await interaction.followup.send(
-            "⚠️ Timed out connecting to voice. This usually means the server hosting the bot "
-            "is blocking the UDP traffic Discord voice needs — common on some free hosting tiers. "
-            "Try again, or check your host's networking docs for UDP support."
-        )
-        return
-    except Exception as e:
-        await interaction.followup.send(f"Couldn't join your voice channel: {e}")
-        return
-
-    try:
-        search_query = await resolve_search_query(query.strip())
-        if not (YOUTUBE_URL_RE.search(search_query) or search_query.startswith("http")):
-            search_query = f"ytsearch1:{search_query}"
-
-        info = await extract_track_info(search_query)
-    except Exception as e:
-        await interaction.followup.send(f"Something went wrong looking that up: {e}")
-        return
-
-    if not info or "url" not in info:
-        await interaction.followup.send("Couldn't find or play that — try a different link or search term.")
-        return
-
-    track = {
-        "title": info.get("title", "Unknown title"),
-        "stream_url": info["url"],
-        "requester": interaction.user.display_name,
-    }
-
-    guild_id = interaction.guild_id
-    song_queues.setdefault(guild_id, [])
-
-    # An explicit /play takes priority over an ongoing 24/7 lofi loop.
-    was_lofi = lofi_mode.get(guild_id, False)
-    lofi_mode[guild_id] = False
-
-    if not was_lofi and (voice_client.is_playing() or voice_client.is_paused()):
-        song_queues[guild_id].append(track)
-        await interaction.followup.send(f"➕ Added to queue: **{track['title']}**")
-    else:
-        song_queues[guild_id].append(track)
-        if was_lofi:
-            voice_client.stop()  # cuts the lofi stream; after-callback will now pull from the queue
-            await interaction.followup.send(f"🔎 Lofi paused — now playing: **{track['title']}**")
-        else:
-            await interaction.followup.send(f"🔎 Found: **{track['title']}**")
-            await play_next(guild_id, voice_client, interaction.channel)
-
-
-@bot.tree.command(name="vskip", description="Skip the currently playing song.")
-async def vskip_command(interaction: discord.Interaction):
-    voice_client = interaction.guild.voice_client
-    if not voice_client or not (voice_client.is_playing() or voice_client.is_paused()):
-        await interaction.response.send_message("Nothing is playing right now.", ephemeral=True)
-        return
-
-    voice_client.stop()  # triggers the 'after' callback, which advances the queue
-    await interaction.response.send_message("⏭️ Skipped.")
-
-
-@bot.tree.command(name="stop", description="Stop playback, clear the queue, and leave the voice channel.")
-async def stop_command(interaction: discord.Interaction):
-    voice_client = interaction.guild.voice_client
-    if not voice_client:
-        await interaction.response.send_message("I'm not in a voice channel.", ephemeral=True)
-        return
-
-    guild_id = interaction.guild_id
-    song_queues[guild_id] = []
-    now_playing[guild_id] = None
-    lofi_mode[guild_id] = False
-    voice_client.stop()
-    await voice_client.disconnect()
-    await interaction.response.send_message("⏹️ Stopped and left the voice channel.")
-
-
-@bot.tree.command(name="queue", description="Show what's up next.")
-async def queue_command(interaction: discord.Interaction):
-    guild_id = interaction.guild_id
-    current = now_playing.get(guild_id)
-    upcoming = song_queues.get(guild_id, [])
-
-    if not current and not upcoming:
-        await interaction.response.send_message("Nothing playing and nothing queued.")
-        return
-
-    lines = []
-    if current:
-        lines.append(f"**Now Playing:** {current['title']} (requested by {current['requester']})")
-    if upcoming:
-        lines.append("\n**Up Next:**")
-        for i, t in enumerate(upcoming[:10], start=1):
-            lines.append(f"{i}. {t['title']} (requested by {t['requester']})")
-
-    await interaction.response.send_message("\n".join(lines))
-
-
-@bot.tree.command(name="nowplaying", description="Show the currently playing song.")
-async def nowplaying_command(interaction: discord.Interaction):
-    current = now_playing.get(interaction.guild_id)
-    if not current:
-        await interaction.response.send_message("Nothing is playing right now.")
-        return
-    await interaction.response.send_message(f"🎶 **{current['title']}** — requested by {current['requester']}")
-
-
-@bot.tree.command(name="join", description="Move the bot to a specific voice channel (stops any 24/7 lofi loop).")
-@app_commands.describe(channel="Voice channel to join")
-async def join_command(interaction: discord.Interaction, channel: discord.VoiceChannel):
-    guild_id = interaction.guild_id
-    voice_client = interaction.guild.voice_client
-
-    await interaction.response.defer()
-
-    lofi_mode[guild_id] = False
-    song_queues[guild_id] = []
-    now_playing[guild_id] = None
-
-    try:
-        if voice_client is None:
-            await channel.connect(timeout=15, reconnect=True)
-        else:
-            voice_client.stop()
-            await voice_client.move_to(channel)
-    except asyncio.TimeoutError:
-        await interaction.followup.send(
-            "⚠️ Timed out connecting to voice. This usually means the server hosting the bot "
-            "is blocking the UDP traffic Discord voice needs — common on some free hosting tiers."
-        )
-        return
-    except Exception as e:
-        await interaction.followup.send(f"Couldn't join {channel.mention}: {e}")
-        return
-
-    await interaction.followup.send(f"👋 Joined {channel.mention}.")
-
-
-@bot.tree.command(name="lofi", description="Play 24/7 lofi radio in a voice channel until moved elsewhere.")
-@app_commands.describe(
-    channel="Voice channel to play lofi in",
-    link="Optional: your own YouTube livestream/link instead of the default lofi radio",
-)
-async def lofi_command(interaction: discord.Interaction, channel: discord.VoiceChannel, link: str = None):
-    guild_id = interaction.guild_id
-    voice_client = interaction.guild.voice_client
-
-    await interaction.response.defer()
-
-    try:
-        if voice_client is None:
-            voice_client = await channel.connect(timeout=15, reconnect=True)
-        elif voice_client.channel != channel:
-            voice_client.stop()
-            await voice_client.move_to(channel)
-        else:
-            voice_client.stop()
-    except asyncio.TimeoutError:
-        await interaction.followup.send(
-            "⚠️ Timed out connecting to voice. This usually means the server hosting the bot "
-            "is blocking the UDP traffic Discord voice needs — common on some free hosting tiers."
-        )
-        return
-    except Exception as e:
-        await interaction.followup.send(f"Couldn't join {channel.mention}: {e}")
-        return
-
-    lofi_mode[guild_id] = True
-    lofi_stream_link[guild_id] = link.strip() if link else DEFAULT_LOFI_STREAM
-    song_queues[guild_id] = []
-
-    await interaction.followup.send(
-        f"🌙 Starting 24/7 lofi radio in {channel.mention}. Use `/join` to move me elsewhere, "
-        f"or `/play` to interrupt with a specific song."
-    )
-
-    try:
-        await play_lofi(guild_id, voice_client, interaction.channel)
-    except Exception as e:
-        await interaction.channel.send(f"⚠️ Couldn't start the lofi stream: {e}")
-
-
-# ----------------------------------------------------------------------
-# CONTROL PANEL
-# ----------------------------------------------------------------------
-
-def build_panel_embed(guild_id: int) -> discord.Embed:
-    guild = bot.get_guild(guild_id)
-    voice_client = guild.voice_client if guild else None
-    current = now_playing.get(guild_id)
-    vol_pct = int(get_volume(guild_id) * 100)
-    mode = "🌙 24/7 Lofi" if lofi_mode.get(guild_id) else "🎵 Normal queue"
-    queue_len = len(song_queues.get(guild_id, []))
-
-    if current:
-        state = "⏸️ Paused" if voice_client and voice_client.is_paused() else "▶️ Playing"
-        description = f"{state}: **{current['title']}**\nRequested by {current['requester']}"
-    else:
-        description = "Nothing is playing."
-
-    embed = discord.Embed(title="🎛️ Music Control Panel", description=description, color=discord.Color.purple())
-    embed.add_field(name="Volume", value=f"{vol_pct}%", inline=True)
-    embed.add_field(name="Mode", value=mode, inline=True)
-    embed.add_field(name="Queue", value=f"{queue_len} waiting", inline=True)
-    return embed
-
-
-class MusicControlView(discord.ui.View):
-    def __init__(self, guild_id: int):
-        super().__init__(timeout=None)
-        self.guild_id = guild_id
-
-    async def refresh(self, interaction: discord.Interaction):
-        await interaction.response.edit_message(embed=build_panel_embed(self.guild_id), view=self)
-
-    @discord.ui.button(label="Play/Pause", emoji="⏯️", style=discord.ButtonStyle.primary)
-    async def play_pause(self, interaction: discord.Interaction, button: discord.ui.Button):
-        voice_client = interaction.guild.voice_client
-        if not voice_client:
-            await interaction.response.send_message("Not connected to a voice channel.", ephemeral=True)
-            return
-        if voice_client.is_playing():
-            voice_client.pause()
-        elif voice_client.is_paused():
-            voice_client.resume()
-        else:
-            await interaction.response.send_message("Nothing is playing right now.", ephemeral=True)
-            return
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="Skip", emoji="⏭️", style=discord.ButtonStyle.secondary)
-    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        voice_client = interaction.guild.voice_client
-        if voice_client and (voice_client.is_playing() or voice_client.is_paused()):
-            voice_client.stop()
-            await asyncio.sleep(0.75)  # let the after-callback update now_playing first
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="Vol −", emoji="🔉", style=discord.ButtonStyle.secondary)
-    async def vol_down(self, interaction: discord.Interaction, button: discord.ui.Button):
-        new_vol = max(0.0, get_volume(self.guild_id) - 0.1)
-        guild_volume[self.guild_id] = new_vol
-        voice_client = interaction.guild.voice_client
-        if voice_client and voice_client.source:
-            voice_client.source.volume = new_vol
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="Vol +", emoji="🔊", style=discord.ButtonStyle.secondary)
-    async def vol_up(self, interaction: discord.Interaction, button: discord.ui.Button):
-        new_vol = min(2.0, get_volume(self.guild_id) + 0.1)
-        guild_volume[self.guild_id] = new_vol
-        voice_client = interaction.guild.voice_client
-        if voice_client and voice_client.source:
-            voice_client.source.volume = new_vol
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="Stop", emoji="⏹️", style=discord.ButtonStyle.danger)
-    async def stop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        voice_client = interaction.guild.voice_client
-        guild_id = self.guild_id
-        song_queues[guild_id] = []
-        now_playing[guild_id] = None
-        lofi_mode[guild_id] = False
-        if voice_client:
-            voice_client.stop()
-            await voice_client.disconnect()
-        await self.refresh(interaction)
-
-
-@bot.tree.command(name="panel", description="Show an interactive music control panel (volume, play/pause, skip, stop).")
-async def panel_command(interaction: discord.Interaction):
-    view = MusicControlView(interaction.guild_id)
-    await interaction.response.send_message(embed=build_panel_embed(interaction.guild_id), view=view)
+    await interaction.response.send_message("its under development still", ephemeral=True)
 
 
 @bot.tree.command(name="cheat", description="Admin only: manually edit a user's leaderboard wins with a code.")
@@ -1104,6 +623,160 @@ async def cheat_command(interaction: discord.Interaction, code: str, user: disco
     await interaction.response.send_message(
         f"✅ Set **{user.display_name}**'s wins to **{wins}**.", ephemeral=True
     )
+
+
+# ----------------------------------------------------------------------
+# QUOTE COMMAND
+# ----------------------------------------------------------------------
+
+QUOTES = [
+    {"text": "Believe it!", "source": "Naruto Uzumaki, Naruto"},
+    {"text": "I am going to be the King of the Pirates!", "source": "Monkey D. Luffy, One Piece"},
+    {"text": "Plus Ultra!", "source": "All Might, My Hero Academia"},
+    {"text": "It's not the size of your power, but how you use it.", "source": "Izuku Midoriya, My Hero Academia"},
+    {"text": "People's lives don't end when they die.", "source": "Itachi Uchiha, Naruto"},
+    {"text": "I'll take a potato chip... and eat it!", "source": "Light Yagami, Death Note"},
+    {"text": "A lesson without pain is meaningless.", "source": "Edward Elric, Fullmetal Alchemist"},
+    {"text": "Whatever happens, happens.", "source": "Spike Spiegel, Cowboy Bebop"},
+    {"text": "Hard work is worthless for those that don't believe in themselves.", "source": "Naruto Uzumaki, Naruto"},
+    {"text": "The only ones who should kill are those prepared to be killed.", "source": "Lelouch Lamperouge, Code Geass"},
+    {"text": "In this world, wherever there is light, there are also shadows.", "source": "Yuki Ashikaga, Fate/stay night"},
+    {"text": "If you don't take risks, you can't create a future.", "source": "Monkey D. Luffy, One Piece"},
+    {"text": "I don't want to conquer anything. I just think the guy with the most freedom is the Pirate King!", "source": "Monkey D. Luffy, One Piece"},
+    {"text": "Fear is not evil. It tells you what your weakness is.", "source": "Gildarts Clive, Fairy Tail"},
+    {"text": "The world isn't perfect, but it's there for us, doing the best it can.", "source": "Roy Mustang, Fullmetal Alchemist"},
+    {"text": "It's OK to cry, everyone needs to cry sometimes.", "source": "Nanako Dojima, Persona 4"},
+    {"text": "War, war never changes.", "source": "Narrator, Fallout"},
+    {"text": "It's dangerous to go alone! Take this.", "source": "Old Man, The Legend of Zelda"},
+    {"text": "Stay determined.", "source": "Undertale"},
+    {"text": "The flame that burns twice as bright burns half as long.", "source": "Nyx Ulric, Final Fantasy XV"},
+    {"text": "You've died. Would you like to know why?", "source": "Sans, Undertale"},
+    {"text": "Hey, listen!", "source": "Navi, The Legend of Zelda: Ocarina of Time"},
+    {"text": "A man chooses, a slave obeys.", "source": "Andrew Ryan, BioShock"},
+    {"text": "Praise the sun!", "source": "Solaire of Astora, Dark Souls"},
+    {"text": "It's dangerous business, going out your front door.", "source": "Bilbo Baggins-style, Fantasy Trope"},
+    {"text": "Do you even science, bro?", "source": "Senku Ishigami, Dr. Stone"},
+    {"text": "Ten years from now, I'll still remember this.", "source": "Kirito, Sword Art Online"},
+    {"text": "The world's not perfect, but there are things worth protecting.", "source": "Roy Mustang, Fullmetal Alchemist"},
+    {"text": "I refuse.", "source": "Emma, The Promised Neverland"},
+    {"text": "Get a grip, and move forward.", "source": "Simon, Gurren Lagann"},
+    {"text": "Row row, fight the power!", "source": "Gurren Lagann"},
+    {"text": "This is the police! Nobody move!", "source": "Osaka, Azumanga Daioh"},
+]
+
+
+@bot.tree.command(name="quote", description="Get a random anime or video game quote.")
+async def quote_command(interaction: discord.Interaction):
+    quote = random.choice(QUOTES)
+    await interaction.response.send_message(f'*"{quote["text"]}"*\n— {quote["source"]}')
+
+
+# ----------------------------------------------------------------------
+# TIC-TAC-TOE
+# ----------------------------------------------------------------------
+
+class TicTacToeButton(discord.ui.Button):
+    def __init__(self, x: int, y: int):
+        super().__init__(style=discord.ButtonStyle.secondary, label="\u200b", row=y)
+        self.x = x
+        self.y = y
+
+    async def callback(self, interaction: discord.Interaction):
+        view: "TicTacToeView" = self.view
+
+        if interaction.user.id not in (view.player_x.id, view.player_o.id):
+            await interaction.response.send_message("This isn't your game!", ephemeral=True)
+            return
+        if interaction.user.id != view.current_player.id:
+            await interaction.response.send_message("It's not your turn!", ephemeral=True)
+            return
+        if view.board[self.y][self.x] != 0:
+            await interaction.response.send_message("That spot's already taken!", ephemeral=True)
+            return
+
+        mark = 1 if interaction.user.id == view.player_x.id else 2
+        view.board[self.y][self.x] = mark
+        self.label = "❌" if mark == 1 else "⭕"
+        self.style = discord.ButtonStyle.danger if mark == 1 else discord.ButtonStyle.primary
+        self.disabled = True
+
+        winner = view.check_winner()
+        if winner:
+            for child in view.children:
+                child.disabled = True
+            winner_user = view.player_x if winner == 1 else view.player_o
+            await interaction.response.edit_message(content=f"🎉 {winner_user.mention} wins!", view=view)
+            view.stop()
+            return
+
+        if view.is_draw():
+            for child in view.children:
+                child.disabled = True
+            await interaction.response.edit_message(content="🤝 It's a draw!", view=view)
+            view.stop()
+            return
+
+        view.current_player = view.player_o if view.current_player.id == view.player_x.id else view.player_x
+        turn_mark = "❌" if view.current_player.id == view.player_x.id else "⭕"
+        await interaction.response.edit_message(
+            content=f"{view.current_player.mention}'s turn ({turn_mark})", view=view
+        )
+
+
+class TicTacToeView(discord.ui.View):
+    def __init__(self, player_x: discord.Member, player_o: discord.Member):
+        super().__init__(timeout=300)
+        self.player_x = player_x
+        self.player_o = player_o
+        self.current_player = player_x
+        self.board = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+        self.message: discord.Message = None
+
+        for y in range(3):
+            for x in range(3):
+                self.add_item(TicTacToeButton(x, y))
+
+    def check_winner(self):
+        b = self.board
+        lines = list(b)  # rows
+        lines += [[b[r][c] for r in range(3)] for c in range(3)]  # columns
+        lines.append([b[i][i] for i in range(3)])  # diagonal
+        lines.append([b[i][2 - i] for i in range(3)])  # anti-diagonal
+
+        for line in lines:
+            if line[0] != 0 and line[0] == line[1] == line[2]:
+                return line[0]
+        return None
+
+    def is_draw(self) -> bool:
+        return all(cell != 0 for row in self.board for cell in row)
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(content="⏱️ Game timed out.", view=self)
+            except discord.HTTPException:
+                pass
+
+
+@bot.tree.command(name="tictactoe", description="Challenge someone to a game of Tic-Tac-Toe.")
+@app_commands.describe(opponent="Who you want to play against")
+async def tictactoe_command(interaction: discord.Interaction, opponent: discord.Member):
+    if opponent.id == interaction.user.id:
+        await interaction.response.send_message("You can't play against yourself!", ephemeral=True)
+        return
+    if opponent.bot:
+        await interaction.response.send_message("You can't play against a bot!", ephemeral=True)
+        return
+
+    view = TicTacToeView(interaction.user, opponent)
+    await interaction.response.send_message(
+        f"❌ {interaction.user.mention} vs ⭕ {opponent.mention}\n{interaction.user.mention}'s turn (❌)",
+        view=view,
+    )
+    view.message = await interaction.original_response()
 
 
 @bot.tree.command(name="cmds", description="Show all available commands.")
@@ -1154,47 +827,17 @@ async def cmds_command(interaction: discord.Interaction):
     )
     embed_en.add_field(
         name="/ask",
-        value="Ask the bot's AI anything and get a response.",
+        value="its under development still",
         inline=False,
     )
     embed_en.add_field(
-        name="/play",
-        value="Plays a YouTube link, Spotify track link, or search term in your voice channel. Joins your VC automatically.",
+        name="/quote",
+        value="Sends a random anime or video game quote.",
         inline=False,
     )
     embed_en.add_field(
-        name="/vskip",
-        value="Skips the currently playing song.",
-        inline=False,
-    )
-    embed_en.add_field(
-        name="/stop",
-        value="Stops playback, clears the queue, and leaves the voice channel.",
-        inline=False,
-    )
-    embed_en.add_field(
-        name="/queue",
-        value="Shows the current song and what's coming up next.",
-        inline=False,
-    )
-    embed_en.add_field(
-        name="/nowplaying",
-        value="Shows the currently playing song.",
-        inline=False,
-    )
-    embed_en.add_field(
-        name="/join",
-        value="Moves the bot into a specific voice channel (stops any 24/7 lofi loop and clears the queue).",
-        inline=False,
-    )
-    embed_en.add_field(
-        name="/lofi",
-        value="Plays 24/7 lofi radio in a chosen voice channel — keeps looping until moved with /join or interrupted with /play.",
-        inline=False,
-    )
-    embed_en.add_field(
-        name="/panel",
-        value="Shows an interactive control panel with play/pause, skip, volume, and stop buttons.",
+        name="/tictactoe",
+        value="Challenge another user to Tic-Tac-Toe with clickable buttons.",
         inline=False,
     )
     embed_en.add_field(
@@ -1254,47 +897,17 @@ async def cmds_command(interaction: discord.Interaction):
     )
     embed_ar.add_field(
         name="/ask",
-        value="اسأل ذكاء البوت الاصطناعي أي سؤال واحصل على إجابة.",
+        value="لا يزال قيد التطوير",
         inline=False,
     )
     embed_ar.add_field(
-        name="/play",
-        value="يشغّل رابط يوتيوب أو رابط أغنية من سبوتيفاي أو كلمة بحث في قناتك الصوتية. ينضم البوت تلقائياً.",
+        name="/quote",
+        value="يرسل اقتباساً عشوائياً من الأنمي أو ألعاب الفيديو.",
         inline=False,
     )
     embed_ar.add_field(
-        name="/vskip",
-        value="يتخطى الأغنية الحالية.",
-        inline=False,
-    )
-    embed_ar.add_field(
-        name="/stop",
-        value="يوقف التشغيل، يمسح قائمة الانتظار، ويغادر القناة الصوتية.",
-        inline=False,
-    )
-    embed_ar.add_field(
-        name="/queue",
-        value="يعرض الأغنية الحالية والأغاني القادمة.",
-        inline=False,
-    )
-    embed_ar.add_field(
-        name="/nowplaying",
-        value="يعرض الأغنية التي تُشغَّل حالياً.",
-        inline=False,
-    )
-    embed_ar.add_field(
-        name="/join",
-        value="ينقل البوت إلى قناة صوتية محددة (يوقف أي تشغيل لوفاي دائم ويمسح قائمة الانتظار).",
-        inline=False,
-    )
-    embed_ar.add_field(
-        name="/lofi",
-        value="يشغّل إذاعة لوفاي على مدار الساعة في القناة الصوتية المختارة — يستمر حتى يُنقل البوت بـ /join أو يُقاطَع بـ /play.",
-        inline=False,
-    )
-    embed_ar.add_field(
-        name="/panel",
-        value="يعرض لوحة تحكم تفاعلية بأزرار تشغيل/إيقاف مؤقت، تخطي، مستوى الصوت، وإيقاف.",
+        name="/tictactoe",
+        value="تحدَّ شخصاً آخر في لعبة إكس-أو بأزرار قابلة للنقر.",
         inline=False,
     )
     embed_ar.add_field(

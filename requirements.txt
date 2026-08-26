@@ -1,5 +1,2 @@
-discord.py>=2.6.0
+discord.py>=2.3.0
 aiohttp>=3.8.0
-yt-dlp
-PyNaCl>=1.5.0
-davey

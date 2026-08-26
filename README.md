@@ -50,48 +50,11 @@ message and the bot announces the winner.
 - `/profile @user` — shows total wins, current streak, and best-ever streak
 - `/dailychallenge` — one shared flag per day, everyone gets exactly one guess (right or wrong), resets at midnight server time. Whichever channel starts it first hosts it for the day.
 - `/osaka` — sends a random gif of Osaka (Ayumu Kasuga, from Azumanga Daioh). Requires a free Giphy API key (see below).
-- `/ask <question>` — ask the bot's AI anything. Requires a free Google Gemini API key (see below). Has an 8-second per-user cooldown to avoid burning through the free daily quota.
-- `/queue` — shows the current song and up to 10 upcoming
-- `/nowplaying` — shows the currently playing song
+- `/ask <question>` — currently a placeholder; replies "its under development still" regardless of what's asked.
+- `/quote` — sends a random short anime or video game quote from a curated list.
+- `/tictactoe @user` — challenges another member to Tic-Tac-Toe with a clickable 3x3 button grid. Only the two players can click; the game times out after 5 minutes of inactivity.
 - `/cheat code:123123 user:@someone wins:50` — manually sets a user's win count on the leaderboard. Change `CHEAT_CODE` near the top of `flag_bot.py` if you want a different code. Response is private (only you see it).
 - `/cmds` — shows this list in-Discord (English + Arabic)
-
-## Music commands
-- `/play <link or search>` — joins your voice channel and plays a YouTube link, a Spotify **track** link, or a plain search term (e.g. "bohemian rhapsody"). If something's already playing, it queues instead.
-- `/vskip` — skips the current song
-- `/stop` — stops playback, clears the queue, and leaves the voice channel
-- `/queue` / `/nowplaying` — see above
-- `/join <channel>` — moves the bot into a specific voice channel directly. This also stops any active 24/7 lofi loop and clears the queue.
-- `/lofi <channel> [link]` — starts a 24/7 lofi radio loop in the given voice channel. Plays a default lofi livestream (or your own YouTube link if you pass one) on repeat indefinitely, until you move the bot with `/join` or interrupt it with `/play`.
-- `/panel` — posts an interactive control panel with buttons: ⏯️ Play/Pause, ⏭️ Skip, 🔉/🔊 Volume, ⏹️ Stop. Volume adjusts live without restarting the current track. Note: this panel only works while the bot process stays running — if Railway redeploys, run `/panel` again to get a fresh working one.
-
-**How Spotify links work:** Spotify doesn't allow any app to stream actual audio through its API — only official Spotify apps can do that. So `/play` reads the track's public title from Spotify's embed metadata (no API key needed) and searches YouTube for that title, then plays the best match. This works well for popular/official tracks but occasionally picks a cover or lyric video if the exact original isn't easy to find. Only single-track links are supported, not playlists or albums.
-
-**Required setup for music to work:**
-1. **Bot permissions** — when generating your invite URL (OAuth2 → URL Generator), make sure `Connect` and `Speak` are checked under Bot Permissions, in addition to the ones from step 2 in Setup above.
-2. **System dependencies** — voice playback needs `ffmpeg` and `libopus0` installed on the host, which pip can't provide. If you're on Railway, the included `nixpacks.toml` file handles this automatically — just make sure it's uploaded to your repo alongside the other files. If running locally, install ffmpeg yourself (e.g. `sudo apt install ffmpeg libopus0` on Linux, `brew install ffmpeg opus` on Mac).
-3. **Voice encryption library** — Discord is rolling out mandatory end-to-end encryption for voice (called DAVE). Newer discord.py versions need a companion package called `davey` to connect to voice at all — without it you'll get a "davey library needed" error. This is already in `requirements.txt`, so a fresh install should just work; if you're updating an existing deployment, make sure `requirements.txt` gets re-uploaded too so Railway installs it.
-4. **A quick legal note:** pulling audio from YouTube this way (via `yt-dlp`) is technically against YouTube's Terms of Service, even though it's extremely common practice for hobby Discord bots. Worth knowing if you ever run this at a larger scale.
-
-## If /play or /lofi say "couldn't find or play that"
-
-**Confirmed cause for this bot:** YouTube is blocking Railway's server IP with a "Sign in to confirm you're not a bot" error. This is YouTube fingerprinting cloud/datacenter IPs in general — it's not a bug in the bot's code, and it isn't personal to your server.
-
-**The fix: use cookies from a real, logged-in YouTube account.**
-
-⚠️ **Do not commit a cookies.txt file to your GitHub repo.** It contains live session data — anyone who gets it can access that YouTube account. Use the environment variable method below instead, which keeps the cookie data out of your repo entirely.
-
-**Steps:**
-1. Log into YouTube in your browser using an account you're comfortable using for this (a secondary/throwaway account is a reasonable choice, not your main one)
-2. Install a cookie-export extension — e.g. **"Get cookies.txt LOCALLY"** for Chrome or Firefox
-3. Go to youtube.com, make sure you're logged in, then use the extension to export cookies for the site. It downloads a `cookies.txt` file in Netscape format.
-4. Open that file in a text editor and copy the **entire contents**
-5. In Railway → your project → **Variables**, add a new variable:
-   - Name: `YTDLP_COOKIES_CONTENT`
-   - Value: paste the entire file contents
-6. Redeploy. The bot writes this to a temporary file on startup automatically — you'll see `Using YouTube cookies file for yt-dlp requests.` in the logs if it picked it up correctly.
-
-**Heads up:** YouTube cookies expire periodically (session-dependent, often a few weeks to a couple months). If `/play` starts failing again down the line with the same "Sign in to confirm" error, just repeat steps 2–6 with a fresh export.
 
 ## Bot status / Rich Presence
 
@@ -117,16 +80,11 @@ If you ever want to change the status text, game title, or swap the images, ever
 4. Without this key set, `/osaka` will still respond, just with a message saying it isn't configured yet — it won't crash the bot.
 5. Note: Giphy's free "beta" key defaults to a lower rate limit and shows a watermark on search results; you can request production access for free later if you outgrow it — fine for casual server use as-is.
 
-## Setting up /ask (Google Gemini API key)
-1. Go to https://aistudio.google.com/apikey and sign in with a Google account
-2. Click "Create API key" — it's instant, no card required, and the free tier doesn't expire
-3. Add it as an environment variable named `GEMINI_API_KEY`
-4. Free tier gives you 1,500 requests/day on the model this bot uses (`gemini-2.5-flash`) — plenty for a personal server
-5. Without this key set, `/ask` will still respond, just with a message saying it isn't configured yet
-6. Note: on the free tier, Google may use your prompts to improve their models. If that matters to you, this is documented on their pricing page.
-
 ## Customizing
 - Add/remove countries in the `COUNTRIES` list near the top of `flag_bot.py` — each entry needs a flag emoji, a list of accepted English answers, and a list of accepted Arabic answers.
 - Only one round (`/flag` or `/duel`) runs per channel at a time; a new one can't start until the current one is answered or skipped.
 - The daily challenge runs independently of `/flag`/`/duel` rounds — if a normal round is active in a channel, daily-challenge guesses in that channel are ignored until the round ends.
 - Scores are saved to `scores.json` in the same folder as the bot. Note: on Railway's free tier the filesystem may reset on redeploy, so scores aren't guaranteed to survive updates — let me know if you want this upgraded to a real database later.
+
+## Removed features
+Voice/music commands (`/play`, `/vskip`, `/stop`, `/queue`, `/nowplaying`, `/join`, `/lofi`, `/panel`) have been removed, along with their dependencies (`yt-dlp`, `PyNaCl`, `davey`) and the `nixpacks.toml` file that installed `ffmpeg`/`libopus0` for them. If you want voice features back later, this is recoverable — just ask.
