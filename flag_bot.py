@@ -840,13 +840,38 @@ async def tictactoe_command(interaction: discord.Interaction, opponent: discord.
 # total components, so a button-per-square grid (like /tictactoe) isn't
 # possible here. Instead, moves are made via two chained dropdowns:
 # "pick a piece to move" -> "pick where to move it".
+#
+# The board itself is rendered as an actual PNG image (not emoji/text) —
+# emoji-based boards run into two real problems: adjacent flag-letter emoji
+# combine into unrelated country flags, and rows wrap unpredictably on
+# narrow (mobile) screens since they aren't in a monospace context. An
+# image sidesteps both entirely and looks like an actual chessboard.
 
+import io
 import chess as chesslib
+from PIL import Image, ImageDraw, ImageFont
 
-# Classic brown/tan checkerboard tiles for the board display. Discord has no
-# dedicated "tan" square emoji, so orange stands in for the light squares.
-LIGHT_SQUARE = "🟧"
-DARK_SQUARE = "🟫"
+CHESS_SQUARE_PX = 80
+CHESS_MARGIN_PX = 30
+CHESS_LIGHT_COLOR = (240, 190, 120)   # tan
+CHESS_DARK_COLOR = (140, 90, 50)      # brown
+CHESS_BG_COLOR = (30, 20, 15)
+CHESS_LABEL_COLOR = (255, 255, 255)
+CHESS_WHITE_PIECE_FILL = (255, 255, 255)
+CHESS_WHITE_PIECE_OUTLINE = (0, 0, 0)
+CHESS_BLACK_PIECE_FILL = (20, 20, 20)
+CHESS_BLACK_PIECE_OUTLINE = (255, 255, 255)
+
+# Bundled font so rendering works on any host without relying on system fonts
+# being installed. DejaVu Sans supports the Unicode chess piece glyphs.
+_CHESS_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "DejaVuSans.ttf")
+try:
+    CHESS_PIECE_FONT = ImageFont.truetype(_CHESS_FONT_PATH, 56)
+    CHESS_LABEL_FONT = ImageFont.truetype(_CHESS_FONT_PATH, 20)
+except OSError:
+    print(f"Warning: chess font not found at {_CHESS_FONT_PATH}, falling back to default font.")
+    CHESS_PIECE_FONT = ImageFont.load_default()
+    CHESS_LABEL_FONT = ImageFont.load_default()
 
 CHESS_PIECE_SYMBOLS = {
     (chesslib.PAWN, True): "♙", (chesslib.PAWN, False): "♟",
@@ -857,7 +882,47 @@ CHESS_PIECE_SYMBOLS = {
     (chesslib.KING, True): "♔", (chesslib.KING, False): "♚",
 }
 
-FILE_LABELS = ["🇦", "🇧", "🇨", "🇩", "🇪", "🇫", "🇬", "🇭"]
+
+def render_chess_board_image(board: chesslib.Board) -> io.BytesIO:
+    """Renders the board as a PNG image and returns it as an in-memory buffer."""
+    board_px = CHESS_SQUARE_PX * 8
+    img_size = board_px + CHESS_MARGIN_PX * 2
+    img = Image.new("RGB", (img_size, img_size), CHESS_BG_COLOR)
+    draw = ImageDraw.Draw(img)
+
+    for rank in range(8):
+        for file in range(8):
+            is_light = (rank + file) % 2 == 1
+            color = CHESS_LIGHT_COLOR if is_light else CHESS_DARK_COLOR
+            x0 = CHESS_MARGIN_PX + file * CHESS_SQUARE_PX
+            y0 = CHESS_MARGIN_PX + (7 - rank) * CHESS_SQUARE_PX
+            draw.rectangle([x0, y0, x0 + CHESS_SQUARE_PX, y0 + CHESS_SQUARE_PX], fill=color)
+
+            piece = board.piece_at(chesslib.square(file, rank))
+            if piece:
+                symbol = CHESS_PIECE_SYMBOLS[(piece.piece_type, piece.color)]
+                fill = CHESS_WHITE_PIECE_FILL if piece.color else CHESS_BLACK_PIECE_FILL
+                outline = CHESS_WHITE_PIECE_OUTLINE if piece.color else CHESS_BLACK_PIECE_OUTLINE
+                cx, cy = x0 + CHESS_SQUARE_PX // 2, y0 + CHESS_SQUARE_PX // 2
+                for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                    draw.text((cx + dx, cy + dy), symbol, font=CHESS_PIECE_FONT, fill=outline, anchor="mm")
+                draw.text((cx, cy), symbol, font=CHESS_PIECE_FONT, fill=fill, anchor="mm")
+
+    files = "abcdefgh"
+    for file in range(8):
+        x = CHESS_MARGIN_PX + file * CHESS_SQUARE_PX + CHESS_SQUARE_PX // 2
+        draw.text((x, CHESS_MARGIN_PX // 2), files[file], font=CHESS_LABEL_FONT, fill=CHESS_LABEL_COLOR, anchor="mm")
+        draw.text((x, img_size - CHESS_MARGIN_PX // 2), files[file], font=CHESS_LABEL_FONT, fill=CHESS_LABEL_COLOR, anchor="mm")
+    for rank in range(8):
+        y = CHESS_MARGIN_PX + (7 - rank) * CHESS_SQUARE_PX + CHESS_SQUARE_PX // 2
+        draw.text((CHESS_MARGIN_PX // 2, y), str(rank + 1), font=CHESS_LABEL_FONT, fill=CHESS_LABEL_COLOR, anchor="mm")
+        draw.text((img_size - CHESS_MARGIN_PX // 2, y), str(rank + 1), font=CHESS_LABEL_FONT, fill=CHESS_LABEL_COLOR, anchor="mm")
+
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
 
 # channel_id -> ChessView, so only one game runs per channel at a time
 chess_games: dict[int, "ChessView"] = {}
@@ -996,25 +1061,6 @@ class ChessView(discord.ui.View):
         self.from_select.options = options[:25]
         self.from_select.placeholder = "Select a piece to move..."
 
-    def board_display(self) -> str:
-        file_header = "⬛" + "".join(FILE_LABELS)
-        rows = [file_header]
-
-        for rank in range(7, -1, -1):
-            cells = []
-            for file in range(8):
-                square = chesslib.square(file, rank)
-                is_light = (rank + file) % 2 == 1
-                tile = LIGHT_SQUARE if is_light else DARK_SQUARE
-                piece = self.board.piece_at(square)
-                if piece:
-                    tile += CHESS_PIECE_SYMBOLS[(piece.piece_type, piece.color)]
-                cells.append(tile)
-            rank_label = f"{rank + 1}️⃣"
-            rows.append(rank_label + "".join(cells))
-
-        return "\n".join(rows)
-
     def status_line(self) -> str:
         turn_name = "White" if self.board.turn == chesslib.WHITE else "Black"
         check_note = " — Check!" if self.board.is_check() else ""
@@ -1023,15 +1069,19 @@ class ChessView(discord.ui.View):
     def header(self) -> str:
         return f"♟️ {self.white.mention} (White) vs {self.black.mention} (Black)"
 
+    def board_file(self) -> discord.File:
+        buffer = render_chess_board_image(self.board)
+        return discord.File(fp=buffer, filename="board.png")
+
     async def refresh_message(self, interaction: discord.Interaction):
-        content = f"{self.header()}\n{self.board_display()}\n{self.status_line()}"
-        await interaction.response.edit_message(content=content, view=self)
+        content = f"{self.header()}\n{self.status_line()}"
+        await interaction.response.edit_message(content=content, attachments=[self.board_file()], view=self)
 
     async def end_game(self, interaction: discord.Interaction, result_text: str):
         for child in self.children:
             child.disabled = True
-        content = f"{self.header()}\n{self.board_display()}\n{result_text}"
-        await interaction.response.edit_message(content=content, view=self)
+        content = f"{self.header()}\n{result_text}"
+        await interaction.response.edit_message(content=content, attachments=[self.board_file()], view=self)
         chess_games.pop(self.channel_id, None)
         self.stop()
 
@@ -1040,7 +1090,8 @@ class ChessView(discord.ui.View):
             child.disabled = True
         if self.message:
             try:
-                await self.message.edit(content=self.message.content + "\n\n⏱️ Game timed out from inactivity.", view=self)
+                content = f"{self.header()}\n⏱️ Game timed out from inactivity."
+                await self.message.edit(content=content, attachments=[self.board_file()], view=self)
             except discord.HTTPException:
                 pass
         chess_games.pop(self.channel_id, None)
@@ -1064,8 +1115,8 @@ async def chess_command(interaction: discord.Interaction, opponent: discord.Memb
     game = ChessView(interaction.user, opponent, interaction.channel_id)
     chess_games[interaction.channel_id] = game
 
-    content = f"{game.header()}\n{game.board_display()}\n{game.status_line()}"
-    await interaction.response.send_message(content=content, view=game)
+    content = f"{game.header()}\n{game.status_line()}"
+    await interaction.response.send_message(content=content, file=game.board_file(), view=game)
     game.message = await interaction.original_response()
 
 
