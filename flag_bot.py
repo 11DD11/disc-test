@@ -64,7 +64,7 @@ SCORES_FILE = "scores.json"
 # The "large" and "small" image keys below must match the asset keys you upload
 # in the Discord Developer Portal under your app's Rich Presence > Art Assets tab.
 # See the README for full setup steps.
-PRESENCE_STATUS_TEXT = "just watching :3"
+PRESENCE_STATUS_TEXT = "Hollow Knight: Silksong"
 PRESENCE_DETAILS = "Hollow Knight: Silksong"
 PRESENCE_STATE = "Exploring Pharloom"
 PRESENCE_LARGE_IMAGE_KEY = "silksong_cover"
@@ -397,7 +397,7 @@ async def on_ready():
     try:
         app_id = bot.application_id or (await bot.application_info()).id
         activity = discord.Activity(
-            type=discord.ActivityType.watching,
+            type=discord.ActivityType.playing,
             name=PRESENCE_STATUS_TEXT,
             details=PRESENCE_DETAILS,
             state=PRESENCE_STATE,
@@ -472,7 +472,7 @@ class LeaderboardView(discord.ui.LayoutView):
             if avatar_url:
                 section = discord.ui.Section(
                     discord.ui.TextDisplay(content=text),
-                    accessory=discord.ui.Thumbnail(media=avatar_url),
+                    accessory=discord.ui.Thumbnail(url=avatar_url),
                 )
             else:
                 section = discord.ui.Section(discord.ui.TextDisplay(content=text))
@@ -583,7 +583,7 @@ class ProfileView(discord.ui.LayoutView):
         section = discord.ui.Section(
             discord.ui.TextDisplay(content=name_line),
             discord.ui.TextDisplay(content=stats_text),
-            accessory=discord.ui.Thumbnail(media=target.display_avatar.url),
+            accessory=discord.ui.Thumbnail(url=target.display_avatar.url),
         )
 
         container = discord.ui.Container(section, accent_color=discord.Color.blue())
