@@ -20,6 +20,7 @@ guesses in chat.
 import os
 import re
 import json
+import base64
 import time
 import random
 import asyncio
@@ -49,6 +50,13 @@ DEV_USERNAME = "1d_d1"
 DOT_REPLY_TARGET_USER_ID = 1264549467495989269
 DOT_REPLY_GIF_URL = "https://cdn.discordapp.com/attachments/805840493011140678/1097885486414045204/1632856392703811584.gif"
 DOT_REPLY_TRIGGERS = {".", "..", "..."}
+
+# Easter egg: mentioning this specific user posts a real voice message
+# (the blue waveform bubble, not a regular audio attachment).
+VOICE_MENTION_TARGET_USER_ID = 764457716110327809
+VOICE_CLIP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "dev_voice_clip.ogg")
+VOICE_CLIP_DURATION_SECS = 2.491042
+VOICE_CLIP_WAVEFORM_B64 = "AAAAAgUHCQsTCgoLDxolRFGLxbTCwb7CwaWzpKKenKynnaKgnqeco56jnZ1/YkMOCAoHBgUGBlaNipqpt7azrraYlJmYlJuZi42KhIaHf3+GfYB+fn92dn2BgouQhYGmj5CRqpCmpKGepJ+SjXtBLCAeHB8dHyAhJSAgIB8fHiIiIBZVY5ORlZ+enaKYjH9uZGBiYDQsHRAMCw0NDQ8RHSMrMDAvLi4wLy05NS0pLzQtLjAuLCkwKicmHyQlHx0eIB8bGxwXGxcZFRQTFBUTExITERARDxAQFA8NDQwNDA4LCAsLCAkKCQcIBgkJBgcJCAgGBQYEBwgIBwYEBwoHBA=="
 
 # Optional: your server's ID, for instant slash-command sync to that specific
 # server instead of waiting up to ~1hr for a global sync to propagate everywhere.
@@ -1483,12 +1491,57 @@ async def handle_dot_reply_easter_egg(message: discord.Message):
             pass
 
 
+async def send_voice_message(channel_id: int):
+    """Posts a real voice message (the blue waveform bubble) via a raw API call,
+    since discord.py's high-level send() doesn't yet support the required
+    flags/waveform/duration fields for this message type."""
+    if not os.path.exists(VOICE_CLIP_PATH):
+        print(f"Voice clip not found at {VOICE_CLIP_PATH}, skipping voice message.")
+        return
+
+    with open(VOICE_CLIP_PATH, "rb") as f:
+        audio_bytes = f.read()
+
+    url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+    headers = {"Authorization": f"Bot {TOKEN}"}
+    payload = {
+        "flags": 8192,  # IS_VOICE_MESSAGE
+        "attachments": [{
+            "id": "0",
+            "filename": "voice-message.ogg",
+            "duration_secs": VOICE_CLIP_DURATION_SECS,
+            "waveform": VOICE_CLIP_WAVEFORM_B64,
+        }],
+    }
+
+    form = aiohttp.FormData()
+    form.add_field("payload_json", json.dumps(payload), content_type="application/json")
+    form.add_field("files[0]", audio_bytes, filename="voice-message.ogg", content_type="audio/ogg")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, data=form) as resp:
+                if resp.status not in (200, 201):
+                    text = await resp.text()
+                    print(f"Voice message send failed ({resp.status}): {text}")
+    except aiohttp.ClientError as e:
+        print(f"Voice message send error: {e}")
+
+
+async def handle_voice_mention_easter_egg(message: discord.Message):
+    """If VOICE_MENTION_TARGET_USER_ID is mentioned in a message, post the
+    configured voice clip in response."""
+    if any(user.id == VOICE_MENTION_TARGET_USER_ID for user in message.mentions):
+        await send_voice_message(message.channel.id)
+
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
     await handle_dot_reply_easter_egg(message)
+    await handle_voice_mention_easter_egg(message)
 
     channel_id = message.channel.id
     country = active_rounds.get(channel_id)

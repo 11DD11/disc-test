@@ -103,5 +103,12 @@ If commands still don't show up for someone after that, have them fully restart 
 ## Easter egg: dot-reply gif
 If anyone replies with just `.`, `..`, or `...` to a message from the user with ID `1264549467495989269`, the bot posts a specific gif in response. The target user ID and gif URL are set via `DOT_REPLY_TARGET_USER_ID` and `DOT_REPLY_GIF_URL` near the top of `flag_bot.py` if you ever want to change them. This triggers for anyone's reply, not just a specific person's — let me know if you'd rather restrict who can trigger it.
 
+## Easter egg: voice message on mention
+Whenever the user with ID `764457716110327809` is @mentioned by anyone in a message, the bot responds with a real **voice message** — the blue waveform bubble you can play back, not a regular audio file attachment.
+
+**Technical note:** Discord's own API supports voice messages (it's documented behavior — a message flag plus `duration_secs`/`waveform` fields on the attachment), but discord.py doesn't have built-in high-level support for *sending* them yet. So this feature makes a raw HTTP request directly to Discord's API using the bot's own token, bypassing discord.py's normal `send()` method. This is legitimate use of a documented Discord feature, not a workaround of anything restricted.
+
+**Setup:** the audio clip is bundled at `assets/dev_voice_clip.ogg` — already converted to match Discord's exact spec (mono, 48kHz, Opus) with a real waveform preview pre-computed from the actual audio (not fake/random data). Nothing to configure; just make sure that file is uploaded to your repo alongside the code. To change the clip or the target user, edit `VOICE_MENTION_TARGET_USER_ID` and `VOICE_CLIP_PATH` near the top of `flag_bot.py` — note that swapping the audio file also means recomputing `VOICE_CLIP_DURATION_SECS` and `VOICE_CLIP_WAVEFORM_B64` to match (ask if you want a new clip converted).
+
 ## Removed features
 Voice/music commands (`/play`, `/vskip`, `/stop`, `/queue`, `/nowplaying`, `/join`, `/lofi`, `/panel`) have been removed, along with their dependencies (`yt-dlp`, `PyNaCl`, `davey`) and the `nixpacks.toml` file that installed `ffmpeg`/`libopus0` for them. If you want voice features back later, this is recoverable — just ask.
