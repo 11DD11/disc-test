@@ -447,6 +447,44 @@ async def flag_command(interaction: discord.Interaction, code: str = None, count
     )
 
 
+class LeaderboardView(discord.ui.LayoutView):
+    def __init__(self, ranked: list, member_lookup: dict):
+        super().__init__(timeout=None)
+        medals = ["🥇", "🥈", "🥉"]
+
+        items = [discord.ui.TextDisplay(content="# 🏆 Flag Leaderboard")]
+        items.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+        for i, (uid, data) in enumerate(ranked):
+            member = member_lookup.get(uid)
+            if member:
+                name = member.display_name
+                if member.name.lower() == DEV_USERNAME:
+                    name += " (the dev)"
+                avatar_url = member.display_avatar.url
+            else:
+                name = f"User {uid}"
+                avatar_url = None
+
+            prefix = medals[i] if i < 3 else f"**{i + 1}.**"
+            text = f"{prefix} **{name}**\n{data['wins']} win(s) · best streak {data.get('best_streak', 0)}"
+
+            if avatar_url:
+                section = discord.ui.Section(
+                    discord.ui.TextDisplay(content=text),
+                    accessory=discord.ui.Thumbnail(media=avatar_url),
+                )
+            else:
+                section = discord.ui.Section(discord.ui.TextDisplay(content=text))
+
+            items.append(section)
+            if i < len(ranked) - 1:
+                items.append(discord.ui.Separator(visible=False, spacing=discord.SeparatorSpacing.small))
+
+        container = discord.ui.Container(*items, accent_color=discord.Color.gold())
+        self.add_item(container)
+
+
 @bot.tree.command(name="leaderboard", description="Show the top flag-guessers.")
 async def leaderboard_command(interaction: discord.Interaction):
     if not scores:
@@ -455,30 +493,19 @@ async def leaderboard_command(interaction: discord.Interaction):
 
     ranked = sorted(scores.items(), key=lambda kv: kv[1]["wins"], reverse=True)[:10]
 
-    lines = []
-    medals = ["🥇", "🥈", "🥉"]
-    for i, (uid, data) in enumerate(ranked):
-        member = None
-        if interaction.guild:
+    member_lookup = {}
+    if interaction.guild:
+        for uid, _ in ranked:
             member = interaction.guild.get_member(int(uid))
             if member is None:
                 try:
                     member = await interaction.guild.fetch_member(int(uid))
                 except discord.HTTPException:
                     member = None
+            if member:
+                member_lookup[uid] = member
 
-        if member:
-            name = member.display_name
-            if member.name.lower() == DEV_USERNAME:
-                name += " (the dev)"
-        else:
-            name = f"User {uid}"
-
-        prefix = medals[i] if i < 3 else f"{i + 1}."
-        lines.append(f"{prefix} **{name}** — {data['wins']} win(s)")
-
-    embed = discord.Embed(title="🏆 Flag Leaderboard", description="\n".join(lines), color=discord.Color.gold())
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(view=LeaderboardView(ranked, member_lookup))
 
 
 @bot.tree.command(name="streak", description="Show the current top winning streak, or your own.")
@@ -539,20 +566,38 @@ async def duel_command(interaction: discord.Interaction, opponent: discord.Membe
     )
 
 
+class ProfileView(discord.ui.LayoutView):
+    def __init__(self, target: discord.Member, entry: dict, is_dev: bool):
+        super().__init__(timeout=None)
+
+        name_line = f"# 📊 {target.display_name}'s Profile"
+        if is_dev:
+            name_line += " *(the dev)*"
+
+        stats_text = (
+            f"**Total Wins:** {entry.get('wins', 0)}\n"
+            f"**Current Streak:** {entry.get('streak', 0)} 🔥\n"
+            f"**Best Streak:** {entry.get('best_streak', 0)}"
+        )
+
+        section = discord.ui.Section(
+            discord.ui.TextDisplay(content=name_line),
+            discord.ui.TextDisplay(content=stats_text),
+            accessory=discord.ui.Thumbnail(media=target.display_avatar.url),
+        )
+
+        container = discord.ui.Container(section, accent_color=discord.Color.blue())
+        self.add_item(container)
+
+
 @bot.tree.command(name="profile", description="Show a player's flag-game stats.")
 @app_commands.describe(user="Whose profile to check (optional)")
 async def profile_command(interaction: discord.Interaction, user: discord.Member = None):
     target = user or interaction.user
     entry = scores.get(str(target.id), {"wins": 0, "streak": 0, "best_streak": 0})
+    is_dev = target.name.lower() == DEV_USERNAME
 
-    embed = discord.Embed(title=f"📊 {target.display_name}'s Profile", color=discord.Color.blue())
-    if target.display_avatar:
-        embed.set_thumbnail(url=target.display_avatar.url)
-    embed.add_field(name="Total Wins", value=str(entry.get("wins", 0)), inline=True)
-    embed.add_field(name="Current Streak", value=str(entry.get("streak", 0)), inline=True)
-    embed.add_field(name="Best Streak", value=str(entry.get("best_streak", 0)), inline=True)
-
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(view=ProfileView(target, entry, is_dev))
 
 
 @bot.tree.command(name="dailychallenge", description="Play today's shared flag challenge — one guess per person.")
