@@ -382,6 +382,35 @@ def record_win(user_id: int) -> None:
     save_scores(scores)
 
 
+# ----------------------------------------------------------------------
+# CURRENCY
+# ----------------------------------------------------------------------
+# Reuses the same scores.json entries, just with an added "coins" field.
+
+STARTING_BALANCE = 100
+
+
+def get_balance(user_id: int) -> int:
+    entry = scores.setdefault(str(user_id), {"wins": 0, "streak": 0, "best_streak": 0})
+    if "coins" not in entry:
+        entry["coins"] = STARTING_BALANCE
+        save_scores(scores)
+    return entry["coins"]
+
+
+def add_balance(user_id: int, amount: int) -> int:
+    """Adds (or subtracts, if negative) coins and returns the new balance."""
+    get_balance(user_id)  # ensures the entry + starting balance exist first
+    entry = scores[str(user_id)]
+    entry["coins"] = max(0, entry["coins"] + amount)
+    save_scores(scores)
+    return entry["coins"]
+
+
+def format_coins(amount: int) -> str:
+    return f"🪙 {amount:,}"
+
+
 @bot.event
 async def on_ready():
     try:
@@ -1300,6 +1329,334 @@ async def rps_command(interaction: discord.Interaction, opponent: discord.Member
     game.public_message = public_msg
 
 
+# ----------------------------------------------------------------------
+# GAMBLING
+# ----------------------------------------------------------------------
+
+# (symbol, weight, payout_multiplier) — higher weight = more common.
+SLOT_SYMBOLS = [
+    ("🍒", 30, 2),
+    ("🍋", 25, 3),
+    ("🍇", 20, 4),
+    ("💎", 10, 10),
+    ("7️⃣", 5, 25),
+]
+
+SCRATCH_COST = 50
+# (symbol, weight, payout_multiplier_of_cost) — 0 payout = a "miss" symbol.
+# Tuned to roughly 50% RTP (return-to-player) — see simulation notes below.
+SCRATCH_SYMBOLS = [
+    ("🍀", 60, 0),
+    ("⭐", 22, 1),
+    ("💰", 12, 2),
+    ("💎", 5, 4),
+    ("👑", 1, 10),
+]
+
+
+def weighted_choice(options: list):
+    """options: list of (value, weight, ...) tuples. Returns one full tuple."""
+    total = sum(o[1] for o in options)
+    r = random.uniform(0, total)
+    upto = 0
+    for option in options:
+        upto += option[1]
+        if r <= upto:
+            return option
+    return options[-1]
+
+
+class GamblingHubView(discord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This isn't your gambling menu — run `/gambling` yourself!", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Slots", emoji="🎰", style=discord.ButtonStyle.primary)
+    async def slots_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(SlotsBetModal(self.user_id))
+
+    @discord.ui.button(label="Coinflip", emoji="🪙", style=discord.ButtonStyle.primary)
+    async def coinflip_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(CoinflipModal(self.user_id))
+
+    @discord.ui.button(label="Scratch Card", emoji="🎫", style=discord.ButtonStyle.primary)
+    async def scratch_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        balance = get_balance(self.user_id)
+        if balance < SCRATCH_COST:
+            await interaction.response.send_message(
+                f"You need {format_coins(SCRATCH_COST)} to buy a scratch card — you have {format_coins(balance)}.",
+                ephemeral=True,
+            )
+            return
+        add_balance(self.user_id, -SCRATCH_COST)
+        view = ScratchCardView(self.user_id)
+        await interaction.response.send_message(
+            f"🎫 Scratch card purchased for {format_coins(SCRATCH_COST)}! Click the cells to scratch them.",
+            view=view,
+            ephemeral=True,
+        )
+
+
+class SlotsBetModal(discord.ui.Modal, title="🎰 Slots"):
+    bet_amount = discord.ui.TextInput(label="Bet amount", placeholder="e.g. 50", required=True, max_length=10)
+
+    def __init__(self, user_id: int):
+        super().__init__()
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            bet = int(self.bet_amount.value)
+        except ValueError:
+            await interaction.response.send_message("Enter a whole number.", ephemeral=True)
+            return
+        if bet <= 0:
+            await interaction.response.send_message("Bet must be positive.", ephemeral=True)
+            return
+
+        balance = get_balance(self.user_id)
+        if bet > balance:
+            await interaction.response.send_message(
+                f"You only have {format_coins(balance)}.", ephemeral=True
+            )
+            return
+
+        add_balance(self.user_id, -bet)
+        await interaction.response.send_message("🎰 Spinning...", ephemeral=True)
+
+        reels = [weighted_choice(SLOT_SYMBOLS) for _ in range(3)]
+        symbols = [r[0] for r in reels]
+        display = " | ".join(symbols)
+
+        if symbols[0] == symbols[1] == symbols[2]:
+            payout = bet * reels[0][2]
+            add_balance(self.user_id, payout)
+            result = f"🎉 JACKPOT! All three match! You won {format_coins(payout)}!"
+        elif symbols[0] == symbols[1] or symbols[1] == symbols[2] or symbols[0] == symbols[2]:
+            add_balance(self.user_id, bet)  # break even
+            result = "🤏 Two matched — bet refunded, no profit."
+        else:
+            result = f"😔 No match. You lost {format_coins(bet)}."
+
+        new_balance = get_balance(self.user_id)
+        await interaction.edit_original_response(
+            content=f"🎰 [ {display} ]\n\n{result}\n\nBalance: {format_coins(new_balance)}"
+        )
+
+
+class CoinflipModal(discord.ui.Modal, title="🪙 Coinflip"):
+    bet_amount = discord.ui.TextInput(label="Bet amount", placeholder="e.g. 50", required=True, max_length=10)
+    choice = discord.ui.TextInput(label="Heads or Tails?", placeholder="heads / tails", required=True, max_length=10)
+
+    def __init__(self, user_id: int):
+        super().__init__()
+        self.user_id = user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            bet = int(self.bet_amount.value)
+        except ValueError:
+            await interaction.response.send_message("Enter a whole number for the bet.", ephemeral=True)
+            return
+        if bet <= 0:
+            await interaction.response.send_message("Bet must be positive.", ephemeral=True)
+            return
+
+        guess = self.choice.value.strip().lower()
+        if guess not in ("heads", "tails"):
+            await interaction.response.send_message("Type either 'heads' or 'tails'.", ephemeral=True)
+            return
+
+        balance = get_balance(self.user_id)
+        if bet > balance:
+            await interaction.response.send_message(f"You only have {format_coins(balance)}.", ephemeral=True)
+            return
+
+        add_balance(self.user_id, -bet)
+        result_flip = random.choice(["heads", "tails"])
+        flip_emoji = "🪙"
+
+        if guess == result_flip:
+            payout = bet * 2
+            add_balance(self.user_id, payout)
+            outcome = f"🎉 It was **{result_flip}**! You won {format_coins(payout)}!"
+        else:
+            outcome = f"😔 It was **{result_flip}**. You lost {format_coins(bet)}."
+
+        new_balance = get_balance(self.user_id)
+        await interaction.response.send_message(
+            f"{flip_emoji} Flipping...\n\n{outcome}\n\nBalance: {format_coins(new_balance)}", ephemeral=True
+        )
+
+
+class ScratchCardButton(discord.ui.Button):
+    def __init__(self, index: int):
+        super().__init__(label="❓", style=discord.ButtonStyle.secondary, row=index // 3)
+        self.index = index
+
+    async def callback(self, interaction: discord.Interaction):
+        view: "ScratchCardView" = self.view
+        if interaction.user.id != view.user_id:
+            await interaction.response.send_message("This isn't your scratch card!", ephemeral=True)
+            return
+        if view.revealed[self.index]:
+            await interaction.response.send_message("Already scratched that one!", ephemeral=True)
+            return
+
+        view.reveal(self.index)
+        self.label = view.symbols[self.index]
+        self.disabled = True
+        self.style = discord.ButtonStyle.success
+
+        if all(view.revealed):
+            await view.finish(interaction)
+        else:
+            await interaction.response.edit_message(view=view)
+
+
+class ScratchCardRevealAllButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Reveal All", emoji="✨", style=discord.ButtonStyle.primary, row=3)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: "ScratchCardView" = self.view
+        if interaction.user.id != view.user_id:
+            await interaction.response.send_message("This isn't your scratch card!", ephemeral=True)
+            return
+
+        for i, child in enumerate(view.children):
+            if isinstance(child, ScratchCardButton) and not view.revealed[i]:
+                view.reveal(i)
+                child.label = view.symbols[i]
+                child.disabled = True
+                child.style = discord.ButtonStyle.success
+
+        await view.finish(interaction)
+
+
+class ScratchCardView(discord.ui.View):
+    def __init__(self, user_id: int):
+        super().__init__(timeout=180)
+        self.user_id = user_id
+        self.symbols = [weighted_choice(SCRATCH_SYMBOLS)[0] for _ in range(9)]
+        self.revealed = [False] * 9
+        self.finished = False
+
+        for i in range(9):
+            self.add_item(ScratchCardButton(i))
+        self.add_item(ScratchCardRevealAllButton())
+
+    def reveal(self, index: int):
+        self.revealed[index] = True
+
+    async def finish(self, interaction: discord.Interaction):
+        if self.finished:
+            await interaction.response.edit_message(view=self)
+            return
+        self.finished = True
+
+        for child in self.children:
+            child.disabled = True
+
+        counts = {}
+        for s in self.symbols:
+            counts[s] = counts.get(s, 0) + 1
+
+        best_payout_multiplier = 0
+        winning_symbol = None
+        for symbol, count in counts.items():
+            if count >= 3:
+                multiplier = next((m for sym, w, m in SCRATCH_SYMBOLS if sym == symbol), 0)
+                if multiplier > best_payout_multiplier:
+                    best_payout_multiplier = multiplier
+                    winning_symbol = symbol
+
+        if winning_symbol and best_payout_multiplier > 0:
+            payout = SCRATCH_COST * best_payout_multiplier
+            add_balance(self.user_id, payout)
+            result_text = f"🎉 Three or more {winning_symbol}! You won {format_coins(payout)}!"
+        else:
+            result_text = "😔 No matches — better luck next time!"
+
+        new_balance = get_balance(self.user_id)
+        await interaction.response.edit_message(
+            content=f"🎫 Scratch card revealed!\n\n{result_text}\n\nBalance: {format_coins(new_balance)}",
+            view=self,
+        )
+
+
+@bot.tree.command(name="gambling", description="Open the gambling menu — slots, coinflip, and scratch cards.")
+async def gambling_command(interaction: discord.Interaction):
+    balance = get_balance(interaction.user.id)
+    view = GamblingHubView(interaction.user.id)
+    await interaction.response.send_message(
+        f"🎲 **Gambling Hub**\nYour balance: {format_coins(balance)}\n\nPick a game:",
+        view=view,
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="balance", description="Check your (or someone else's) coin balance.")
+@app_commands.describe(user="Whose balance to check (optional)")
+async def balance_command(interaction: discord.Interaction, user: discord.Member = None):
+    target = user or interaction.user
+    balance = get_balance(target.id)
+    await interaction.response.send_message(f"{target.display_name}'s balance: {format_coins(balance)}")
+
+
+@bot.tree.command(name="give", description="Give some of your coins to another user.")
+@app_commands.describe(user="Who to give coins to", amount="How many coins to give")
+async def give_command(interaction: discord.Interaction, user: discord.Member, amount: int):
+    if user.id == interaction.user.id:
+        await interaction.response.send_message("You can't give coins to yourself!", ephemeral=True)
+        return
+    if user.bot:
+        await interaction.response.send_message("You can't give coins to a bot!", ephemeral=True)
+        return
+    if amount <= 0:
+        await interaction.response.send_message("Amount must be positive.", ephemeral=True)
+        return
+
+    sender_balance = get_balance(interaction.user.id)
+    if amount > sender_balance:
+        await interaction.response.send_message(
+            f"You only have {format_coins(sender_balance)}.", ephemeral=True
+        )
+        return
+
+    add_balance(interaction.user.id, -amount)
+    add_balance(user.id, amount)
+
+    await interaction.response.send_message(
+        f"💸 {interaction.user.mention} gave {format_coins(amount)} to {user.mention}!"
+    )
+
+
+@bot.tree.command(name="cheatcoins", description="Admin only: manually edit a user's coin balance with a code.")
+@app_commands.describe(code="The access code", user="User to edit", amount="New balance to set for this user")
+async def cheatcoins_command(interaction: discord.Interaction, code: str, user: discord.Member, amount: int):
+    if code != CHEAT_CODE:
+        await interaction.response.send_message("❌ Incorrect code.", ephemeral=True)
+        return
+    if amount < 0:
+        await interaction.response.send_message("Balance can't be negative.", ephemeral=True)
+        return
+
+    get_balance(user.id)  # ensure entry exists
+    scores[str(user.id)]["coins"] = amount
+    save_scores(scores)
+
+    await interaction.response.send_message(
+        f"✅ Set **{user.display_name}**'s balance to {format_coins(amount)}.", ephemeral=True
+    )
+
+
 @bot.tree.command(name="cmds", description="Show all available commands.")
 async def cmds_command(interaction: discord.Interaction):
     embed_en = discord.Embed(
@@ -1369,6 +1726,21 @@ async def cmds_command(interaction: discord.Interaction):
     embed_en.add_field(
         name="/rps",
         value="Challenge another user to Rock Paper Scissors. Both pick secretly and simultaneously.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/gambling",
+        value="Opens the gambling menu — slots, coinflip, and scratch cards.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/balance",
+        value="Check your (or someone else's) coin balance.",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/give",
+        value="Give some of your coins to another user.",
         inline=False,
     )
     embed_en.add_field(
@@ -1449,6 +1821,21 @@ async def cmds_command(interaction: discord.Interaction):
     embed_ar.add_field(
         name="/rps",
         value="تحدَّ شخصاً آخر في لعبة حجر ورقة مقص. كل لاعب يختار بسرية وفي نفس الوقت.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/gambling",
+        value="يفتح قائمة القمار — سلوتس، عملة معدنية، وبطاقات خدش.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/balance",
+        value="تحقق من رصيدك (أو رصيد شخص آخر) من العملات.",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/give",
+        value="أعطِ بعضاً من عملاتك لشخص آخر.",
         inline=False,
     )
     embed_ar.add_field(

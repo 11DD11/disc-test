@@ -110,5 +110,18 @@ Whenever the user with ID `764457716110327809` is @mentioned by anyone in a mess
 
 **Setup:** the audio clip is bundled at `assets/dev_voice_clip.ogg` — already converted to match Discord's exact spec (mono, 48kHz, Opus) with a real waveform preview pre-computed from the actual audio (not fake/random data). Nothing to configure; just make sure that file is uploaded to your repo alongside the code. To change the clip or the target user, edit `VOICE_MENTION_TARGET_USER_ID` and `VOICE_CLIP_PATH` near the top of `flag_bot.py` — note that swapping the audio file also means recomputing `VOICE_CLIP_DURATION_SECS` and `VOICE_CLIP_WAVEFORM_B64` to match (ask if you want a new clip converted).
 
+## Currency & Gambling
+Everyone starts with **100 coins** (🪙), tracked in the same `scores.json` file as wins/streaks. New users get the starting balance the first time they check their balance or gamble.
+
+- `/gambling` — opens a private menu with three buttons: Slots, Coinflip, Scratch Card
+  - **Slots**: enter a bet, spin 3 reels. All three matching = jackpot (payout scales by symbol rarity: 🍒 2x, 🍋 3x, 🍇 4x, 💎 10x, 7️⃣ 25x). Two matching = bet refunded. No match = bet lost. Tuned to roughly a 75% return-to-player rate (some house edge, same idea as a real slot machine).
+  - **Coinflip**: enter a bet and call heads or tails. Correct guess doubles your bet; wrong loses it.
+  - **Scratch Card**: fixed 50-coin cost, reveals a 3x3 grid of hidden symbols by clicking cells (or use "Reveal All" for instant results). Getting 3+ of the same symbol pays out based on rarity (🍀 miss, ⭐ 1x, 💰 2x, 💎 4x, 👑 10x). Tuned to roughly 50% RTP.
+- `/balance @user` — check your (or someone else's) coin balance
+- `/give @user amount` — send coins to another user directly
+- `/cheatcoins code:123123 user:@someone amount:500` — manually sets a user's coin balance (same code as `/cheat`). Private response.
+
+**On the odds:** these were simulated (500k+ trials) before shipping to keep the "house" from bleeding money over time — the original scratch card math actually let players win more than they spent on average (a real bug, caught and fixed). If you want to adjust payouts or odds later, everything lives in the `SLOT_SYMBOLS` and `SCRATCH_SYMBOLS` lists near the top of `flag_bot.py` — just re-simulate before changing them live, since small multiplier tweaks can swing the payout rate a lot.
+
 ## Removed features
 Voice/music commands (`/play`, `/vskip`, `/stop`, `/queue`, `/nowplaying`, `/join`, `/lofi`, `/panel`) have been removed, along with their dependencies (`yt-dlp`, `PyNaCl`, `davey`) and the `nixpacks.toml` file that installed `ffmpeg`/`libopus0` for them. If you want voice features back later, this is recoverable — just ask.
