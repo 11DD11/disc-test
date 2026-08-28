@@ -604,7 +604,7 @@ async def duel_command(interaction: discord.Interaction, opponent: discord.Membe
 
 
 class ProfileView(discord.ui.LayoutView):
-    def __init__(self, target: discord.Member, entry: dict, is_dev: bool):
+    def __init__(self, target: discord.Member, entry: dict, is_dev: bool, balance: int):
         super().__init__(timeout=None)
 
         name_line = f"# 📊 {target.display_name}'s Profile"
@@ -614,7 +614,8 @@ class ProfileView(discord.ui.LayoutView):
         stats_text = (
             f"**Total Wins:** {entry.get('wins', 0)}\n"
             f"**Current Streak:** {entry.get('streak', 0)} 🔥\n"
-            f"**Best Streak:** {entry.get('best_streak', 0)}"
+            f"**Best Streak:** {entry.get('best_streak', 0)}\n"
+            f"**Balance:** {format_coins(balance)}"
         )
 
         section = discord.ui.Section(
@@ -633,8 +634,9 @@ async def profile_command(interaction: discord.Interaction, user: discord.Member
     target = user or interaction.user
     entry = scores.get(str(target.id), {"wins": 0, "streak": 0, "best_streak": 0})
     is_dev = target.name.lower() == DEV_USERNAME
+    balance = get_balance(target.id)
 
-    await interaction.response.send_message(view=ProfileView(target, entry, is_dev))
+    await interaction.response.send_message(view=ProfileView(target, entry, is_dev, balance))
 
 
 @bot.tree.command(name="dailychallenge", description="Play today's shared flag challenge — one guess per person.")
