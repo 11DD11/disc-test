@@ -113,7 +113,7 @@ Whenever the user with ID `764457716110327809` is @mentioned by anyone in a mess
 ## Currency & Gambling
 Everyone starts with **100 coins** (🪙), tracked in the same `scores.json` file as wins/streaks. New users get the starting balance the first time they check their balance or gamble.
 
-All three games render as actual generated images — a dark green felt background, gold trim, and hand-drawn icons (real full-color emoji like 🍒 can't be rendered through a regular font, so each symbol is custom-drawn) — rather than plain text or embeds. This uses the same PIL-based rendering approach as the chess board.
+All three games render as actual generated images — a dark green felt background with a radial glow, gold double-border trim, drop shadows for real depth, glossy highlights on every icon, and anti-aliased smooth edges (rendered at 3x resolution then downscaled) — rather than plain text, embeds, or flat/blocky graphics. This uses the same PIL-based rendering approach as the chess board, just with a lot more visual polish layered on.
 
 - `/gambling` — opens a private menu with three buttons: Slots, Coinflip, Scratch Card
   - **Slots**: enter a bet, spin 3 reels shown on a mini slot-machine graphic. All three matching = jackpot (payout scales by symbol rarity: cherry 2x, lemon 3x, grape 4x, diamond 10x, seven 25x). Two matching = bet refunded. No match = bet lost. Tuned to roughly a 75% return-to-player rate.

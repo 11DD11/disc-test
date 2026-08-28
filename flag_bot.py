@@ -54,6 +54,11 @@ DOT_REPLY_TRIGGERS = {".", "..", "..."}
 # Easter egg: mentioning this specific user posts a real voice message
 # (the blue waveform bubble, not a regular audio attachment).
 VOICE_MENTION_TARGET_USER_ID = 764457716110327809
+# Matches only an explicit typed @mention (e.g. <@764...> or <@!764...>).
+# Deliberately does NOT use message.mentions, since Discord also populates
+# that list when someone replies with the ping toggle on, even without an
+# actual @mention in the text — this keeps the trigger to direct mentions only.
+VOICE_MENTION_PATTERN = re.compile(rf"<@!?{VOICE_MENTION_TARGET_USER_ID}>")
 VOICE_CLIP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "dev_voice_clip.ogg")
 VOICE_CLIP_DURATION_SECS = 2.491042
 VOICE_CLIP_WAVEFORM_B64 = "AAAAAgUHCQsTCgoLDxolRFGLxbTCwb7CwaWzpKKenKynnaKgnqeco56jnZ1/YkMOCAoHBgUGBlaNipqpt7azrraYlJmYlJuZi42KhIaHf3+GfYB+fn92dn2BgouQhYGmj5CRqpCmpKGepJ+SjXtBLCAeHB8dHyAhJSAgIB8fHiIiIBZVY5ORlZ+enaKYjH9uZGBiYDQsHRAMCw0NDQ8RHSMrMDAvLi4wLy05NS0pLzQtLjAuLCkwKicmHyQlHx0eIB8bGxwXGxcZFRQTFBUTExITERARDxAQFA8NDQwNDA4LCAsLCAkKCQcIBgkJBgcJCAgGBQYEBwgIBwYEBwoHBA=="
@@ -934,7 +939,7 @@ async def tictactoe_command(interaction: discord.Interaction, opponent: discord.
 import io
 import math
 import chess as chesslib
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 CHESS_SQUARE_PX = 80
 CHESS_MARGIN_PX = 30
@@ -1346,6 +1351,7 @@ CASINO_PANEL_BG = (250, 248, 240)
 CASINO_WIN_COLOR = (255, 215, 60)
 CASINO_LOSE_COLOR = (230, 90, 90)
 CASINO_PUSH_COLOR = (200, 200, 200)
+CASINO_SUPERSAMPLE = 3  # render at 3x then downscale for anti-aliased edges/text
 
 _CASINO_FONT_BOLD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "DejaVuSans-Bold.ttf")
 _CASINO_FONT_REGULAR_PATH = _CHESS_FONT_PATH  # same bundled font already used for chess
@@ -1359,34 +1365,103 @@ def _casino_font(bold: bool, size: int) -> ImageFont.FreeTypeFont:
         return ImageFont.load_default()
 
 
-# --- hand-drawn icons (each takes draw context, center x/y, radius) ---
+def _radial_gradient(size, inner_color, outer_color) -> Image.Image:
+    """Cheap radial gradient: compute at low-res then upscale with smoothing."""
+    w, h = size
+    small_w, small_h = max(1, w // 8), max(1, h // 8)
+    small = Image.new("RGB", (small_w, small_h))
+    px = small.load()
+    max_r = math.hypot(small_w / 2, small_h / 2)
+    for y in range(small_h):
+        for x in range(small_w):
+            dist = min(1.0, math.hypot(x - small_w / 2, y - small_h / 2) / max_r)
+            px[x, y] = tuple(int(inner_color[i] + (outer_color[i] - inner_color[i]) * dist) for i in range(3))
+    return small.resize((w, h), Image.BILINEAR)
+
+
+def _drop_shadow(base_img: Image.Image, box, radius, blur=8, offset=(0, 4), opacity=120):
+    """Pastes a soft blurred shadow of a rounded-rect shape onto base_img in place."""
+    shadow = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+    sdraw = ImageDraw.Draw(shadow)
+    x0, y0, x1, y1 = box
+    sdraw.rounded_rectangle(
+        [x0 + offset[0], y0 + offset[1], x1 + offset[0], y1 + offset[1]],
+        radius=radius, fill=(0, 0, 0, opacity),
+    )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(blur))
+    composited = Image.alpha_composite(base_img.convert("RGBA"), shadow).convert("RGB")
+    base_img.paste(composited, (0, 0))
+
+
+def _casino_frame(width: int, height: int, title: str) -> tuple:
+    """Creates the shared supersampled canvas + gold double-border + title used
+    by all three gambling images. Returns (ss_image, draw, ss_factor)."""
+    ss = CASINO_SUPERSAMPLE
+    ss_img = Image.new("RGB", (width * ss, height * ss))
+    ss_img.paste(_radial_gradient((width * ss, height * ss), (18, 75, 48), (6, 30, 20)), (0, 0))
+    draw = ImageDraw.Draw(ss_img)
+
+    draw.rounded_rectangle(
+        [8 * ss, 8 * ss, (width - 8) * ss, (height - 8) * ss],
+        radius=26 * ss, outline=CASINO_BORDER_COLOR, width=7 * ss,
+    )
+    draw.rounded_rectangle(
+        [16 * ss, 16 * ss, (width - 16) * ss, (height - 16) * ss],
+        radius=20 * ss, outline=(150, 120, 40), width=2 * ss,
+    )
+
+    title_size = 34 if len(title) > 8 else 42
+    f_title = _casino_font(True, title_size * ss)
+    title_y = 45 * ss if len(title) > 8 else 50 * ss
+    # subtle drop-shadow text (offset lighter copy behind) for a glossy engraved look
+    draw.text((width * ss / 2, title_y + 4 * ss), title, font=f_title, fill=(255, 225, 110), anchor="mm")
+    draw.text((width * ss / 2, title_y), title, font=f_title, fill=CASINO_BORDER_COLOR, anchor="mm")
+
+    return ss_img, draw, ss
+
+
+def _casino_banner(ss_img: Image.Image, draw: ImageDraw.ImageDraw, cy: int, text: str, color, font_size: int = 30):
+    font = _casino_font(True, font_size)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w = bbox[2] - bbox[0]
+    pad = 22
+    draw.rounded_rectangle([ss_img.width/2 - w/2 - pad, cy-30, ss_img.width/2 + w/2 + pad, cy+30], radius=16, fill=(0, 0, 0))
+    draw.rounded_rectangle([ss_img.width/2 - w/2 - pad, cy-30, ss_img.width/2 + w/2 + pad, cy+30], radius=16, outline=color, width=2)
+    draw.text((ss_img.width/2, cy), text, font=font, fill=color, anchor="mm")
+
+
+# --- hand-drawn icons with gloss highlights (each takes draw, center x/y, radius) ---
 
 def _icon_cherry(draw, cx, cy, r):
     off = r * 0.35
-    draw.ellipse([cx-off-r*0.55, cy+off-r*0.4, cx-off+r*0.55, cy+off+r*0.75], fill=(200,20,40), outline=(120,0,20), width=3)
-    draw.ellipse([cx+off-r*0.55, cy+off-r*0.4, cx+off+r*0.55, cy+off+r*0.75], fill=(200,20,40), outline=(120,0,20), width=3)
+    for dx in (-off, off):
+        draw.ellipse([cx+dx-r*0.55, cy+off-r*0.4, cx+dx+r*0.55, cy+off+r*0.75], fill=(200,20,40), outline=(110,0,15), width=3)
+        draw.ellipse([cx+dx-r*0.28, cy+off-r*0.22, cx+dx-r*0.05, cy+off+r*0.05], fill=(255,140,150))
     draw.line([cx-off, cy+off-r*0.3, cx, cy-r*0.9], fill=(60,120,40), width=5)
     draw.line([cx+off, cy+off-r*0.3, cx, cy-r*0.9], fill=(60,120,40), width=5)
-    draw.ellipse([cx-r*0.3, cy-r*1.1, cx+r*0.35, cy-r*0.7], fill=(60,150,60), outline=(30,90,30), width=2)
+    draw.ellipse([cx-r*0.32, cy-r*1.15, cx+r*0.38, cy-r*0.72], fill=(70,165,70), outline=(30,90,30), width=2)
 
 
 def _icon_lemon(draw, cx, cy, r):
-    draw.ellipse([cx-r*0.8, cy-r*0.6, cx+r*0.8, cy+r*0.6], fill=(245,210,40), outline=(180,150,10), width=4)
-    draw.ellipse([cx-r*0.95, cy-r*0.12, cx-r*0.65, cy+r*0.12], fill=(245,210,40), outline=(180,150,10), width=2)
-    draw.ellipse([cx+r*0.65, cy-r*0.12, cx+r*0.95, cy+r*0.12], fill=(245,210,40), outline=(180,150,10), width=2)
+    draw.ellipse([cx-r*0.8, cy-r*0.6, cx+r*0.8, cy+r*0.6], fill=(245,210,40), outline=(175,145,10), width=3)
+    draw.ellipse([cx-r*0.95, cy-r*0.12, cx-r*0.65, cy+r*0.12], fill=(245,210,40), outline=(175,145,10), width=2)
+    draw.ellipse([cx+r*0.65, cy-r*0.12, cx+r*0.95, cy+r*0.12], fill=(245,210,40), outline=(175,145,10), width=2)
+    draw.ellipse([cx-r*0.4, cy-r*0.35, cx, cy-r*0.05], fill=(255,240,150))
 
 
 def _icon_grape(draw, cx, cy, r):
     positions = [(-0.4,-0.5),(0.4,-0.5),(0,-0.1),(-0.7,0.2),(0.7,0.2),(-0.35,0.55),(0.35,0.55),(0,0.9)]
     for dx, dy in positions:
         x, y = cx + dx*r*0.9, cy + dy*r*0.9
-        draw.ellipse([x-r*0.32, y-r*0.32, x+r*0.32, y+r*0.32], fill=(120,40,150), outline=(70,15,100), width=2)
-    draw.line([cx, cy-r*1.1, cx, cy-r*0.6], fill=(60,120,40), width=4)
+        draw.ellipse([x-r*0.32, y-r*0.32, x+r*0.32, y+r*0.32], fill=(125,45,155), outline=(65,15,95), width=2)
+        draw.ellipse([x-r*0.14, y-r*0.18, x-r*0.02, y-r*0.06], fill=(190,130,210))
+    draw.line([cx, cy-r*1.1, cx, cy-r*0.6], fill=(60,120,40), width=3)
 
 
 def _icon_diamond(draw, cx, cy, r):
     pts = [(cx, cy-r), (cx+r*0.75, cy-r*0.15), (cx, cy+r), (cx-r*0.75, cy-r*0.15)]
-    draw.polygon(pts, fill=(80,220,235), outline=(20,140,160))
+    draw.polygon(pts, fill=(70,210,230), outline=(15,130,150), width=2)
+    draw.polygon([(cx,cy-r),(cx+r*0.75,cy-r*0.15),(cx,cy-r*0.15)], fill=(170,240,250))
     draw.line([cx, cy-r, cx, cy+r], fill=(255,255,255), width=2)
     draw.line([cx-r*0.75, cy-r*0.15, cx+r*0.75, cy-r*0.15], fill=(255,255,255), width=2)
 
@@ -1394,15 +1469,17 @@ def _icon_diamond(draw, cx, cy, r):
 def _icon_seven(draw, cx, cy, r):
     font = _casino_font(True, int(r*2.2))
     for dx, dy in [(-2,-2),(-2,2),(2,-2),(2,2)]:
-        draw.text((cx+dx, cy+dy), "7", font=font, fill=(120,0,0), anchor="mm")
-    draw.text((cx, cy), "7", font=font, fill=(230,30,30), anchor="mm")
+        draw.text((cx+dx, cy+dy), "7", font=font, fill=(110,0,0), anchor="mm")
+    draw.text((cx, cy), "7", font=font, fill=(235,40,40), anchor="mm")
+    draw.text((cx-r*0.15, cy-r*0.25), "7", font=font, fill=(255,140,140), anchor="mm")
 
 
 def _icon_clover(draw, cx, cy, r):
     off = r*0.42
     for dx, dy in [(-off,-off),(off,-off),(-off,off),(off,off)]:
-        draw.ellipse([cx+dx-r*0.45, cy+dy-r*0.45, cx+dx+r*0.45, cy+dy+r*0.45], fill=(50,160,70), outline=(20,100,40), width=2)
-    draw.line([cx, cy+r*0.3, cx, cy+r*1.15], fill=(40,110,40), width=5)
+        draw.ellipse([cx+dx-r*0.45, cy+dy-r*0.45, cx+dx+r*0.45, cy+dy+r*0.45], fill=(55,165,75), outline=(20,100,40), width=2)
+        draw.ellipse([cx+dx-r*0.2, cy+dy-r*0.28, cx+dx, cy+dy-r*0.1], fill=(140,220,140))
+    draw.line([cx, cy+r*0.3, cx, cy+r*1.15], fill=(40,110,40), width=4)
 
 
 def _icon_star(draw, cx, cy, r):
@@ -1411,16 +1488,18 @@ def _icon_star(draw, cx, cy, r):
         angle = math.pi/2 + i*math.pi/5
         rad = r if i % 2 == 0 else r*0.42
         pts.append((cx + rad*math.cos(angle), cy - rad*math.sin(angle)))
-    draw.polygon(pts, fill=(250,200,40), outline=(180,130,10), width=2)
+    draw.polygon(pts, fill=(252,205,50), outline=(180,130,10), width=2)
+    draw.ellipse([cx-r*0.15, cy-r*0.4, cx+r*0.1, cy-r*0.15], fill=(255,240,180))
 
 
 def _icon_moneybag(draw, cx, cy, r):
-    draw.ellipse([cx-r*0.85, cy-r*0.2, cx+r*0.85, cy+r*0.95], fill=(150,110,60), outline=(90,60,25), width=3)
-    draw.polygon([(cx-r*0.4, cy-r*0.15),(cx+r*0.4, cy-r*0.15),(cx+r*0.15,cy-r*0.7),(cx-r*0.15,cy-r*0.7)], fill=(150,110,60), outline=(90,60,25))
+    draw.ellipse([cx-r*0.85, cy-r*0.2, cx+r*0.85, cy+r*0.95], fill=(155,115,65), outline=(90,60,25), width=3)
+    draw.ellipse([cx-r*0.6, cy-r*0.05, cx-r*0.1, cy+r*0.35], fill=(180,140,85))
+    draw.polygon([(cx-r*0.4, cy-r*0.15),(cx+r*0.4, cy-r*0.15),(cx+r*0.15,cy-r*0.7),(cx-r*0.15,cy-r*0.7)], fill=(155,115,65), outline=(90,60,25))
     draw.line([cx-r*0.15, cy-r*0.68, cx-r*0.35, cy-r*0.95], fill=(90,60,25), width=4)
     draw.line([cx+r*0.15, cy-r*0.68, cx+r*0.35, cy-r*0.95], fill=(90,60,25), width=4)
     font = _casino_font(True, int(r*0.7))
-    draw.text((cx, cy+r*0.35), "$", font=font, fill=(255,230,150), anchor="mm")
+    draw.text((cx, cy+r*0.35), "$", font=font, fill=(255,235,160), anchor="mm")
 
 
 def _icon_crown(draw, cx, cy, r):
@@ -1431,7 +1510,8 @@ def _icon_crown(draw, cx, cy, r):
         (cx+r*0.45, cy+r*0.3), (cx+r*0.9, cy),
         (cx+r*0.9, base_y),
     ]
-    draw.polygon(pts, fill=(250,210,60), outline=(180,140,10), width=3)
+    draw.polygon(pts, fill=(252,213,65), outline=(180,140,10), width=3)
+    draw.polygon([(cx-r*0.8,base_y-r*0.15),(cx+r*0.8,base_y-r*0.15),(cx+r*0.8,cy+r*0.15),(cx-r*0.8,cy+r*0.15)], fill=(255,235,150))
 
 
 CASINO_ICON_DRAWERS = {
@@ -1473,58 +1553,43 @@ def weighted_choice(options: list):
     return options[-1]
 
 
-def _casino_banner(img: Image.Image, draw: ImageDraw.ImageDraw, cy: int, text: str, color, font_size: int = 30):
-    font = _casino_font(True, font_size)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    w = bbox[2] - bbox[0]
-    pad = 20
-    draw.rounded_rectangle(
-        [img.width/2 - w/2 - pad, cy-28, img.width/2 + w/2 + pad, cy+28],
-        radius=14, fill=(0, 0, 0),
-    )
-    draw.text((img.width/2, cy), text, font=font, fill=color, anchor="mm")
-
-
 def render_slots_image(symbols: list, bet: int, payout: int, outcome: str) -> discord.File:
     W, H = 500, 420
-    img = Image.new("RGB", (W, H), CASINO_BG_COLOR)
-    draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle([8, 8, W-8, H-8], radius=24, outline=CASINO_BORDER_COLOR, width=6)
+    ss_img, draw, ss = _casino_frame(W, H, "SLOTS")
 
-    draw.text((W/2, 50), "SLOTS", font=_casino_font(True, 40), fill=CASINO_BORDER_COLOR, anchor="mm")
-
-    body_top, body_bottom = 90, 260
-    draw.rounded_rectangle([40, body_top, W-40, body_bottom], radius=18, fill=(40, 25, 15), outline=CASINO_BORDER_COLOR, width=4)
+    body_top, body_bottom = 92 * ss, 262 * ss
+    _drop_shadow(ss_img, [42*ss, body_top, (W-42)*ss, body_bottom], radius=20*ss, blur=10*ss, offset=(0, 6*ss))
+    draw.rounded_rectangle([40*ss, body_top, (W-40)*ss, body_bottom], radius=18*ss, fill=(35, 22, 13), outline=CASINO_BORDER_COLOR, width=4*ss)
 
     reel_w = (W - 120) / 3
     for i, sym in enumerate(symbols):
-        x0 = 60 + i * (reel_w + 10)
-        x1 = x0 + reel_w
-        draw.rounded_rectangle([x0, body_top+20, x1, body_bottom-20], radius=10, fill=CASINO_PANEL_BG, outline=(90, 60, 30), width=3)
-        cx, cy = (x0+x1)/2, (body_top+20 + body_bottom-20)/2
-        CASINO_ICON_DRAWERS[sym](draw, cx, cy, reel_w*0.32)
+        x0 = (60 + i * (reel_w + 10)) * ss
+        x1 = x0 + reel_w * ss
+        y0, y1 = (body_top/ss + 20) * ss, (body_bottom/ss - 20) * ss
+        _drop_shadow(ss_img, [x0, y0, x1, y1], radius=10*ss, blur=6*ss, offset=(0, 3*ss))
+        draw.rounded_rectangle([x0, y0, x1, y1], radius=10*ss, fill=CASINO_PANEL_BG, outline=(90, 60, 30), width=3*ss)
+        cx, cy = (x0+x1)/2, (y0+y1)/2
+        CASINO_ICON_DRAWERS[sym](draw, cx, cy, reel_w * ss * 0.32)
 
-    draw.text((W/2, 290), f"Bet: {bet} coins", font=_casino_font(False, 20), fill=(230, 230, 230), anchor="mm")
+    draw.text((W*ss/2, 290*ss), f"Bet: {bet} coins", font=_casino_font(False, 20*ss), fill=(225, 225, 225), anchor="mm")
 
     if outcome == "jackpot":
-        _casino_banner(img, draw, 340, f"JACKPOT! +{payout}", CASINO_WIN_COLOR, 32)
+        _casino_banner(ss_img, draw, 340*ss, f"JACKPOT! +{payout}", CASINO_WIN_COLOR, 32*ss)
     elif outcome == "push":
-        _casino_banner(img, draw, 340, "Two matched — refunded", CASINO_PUSH_COLOR, 24)
+        _casino_banner(ss_img, draw, 340*ss, "Two matched — refunded", CASINO_PUSH_COLOR, 24*ss)
     else:
-        _casino_banner(img, draw, 340, f"No match — lost {bet}", CASINO_LOSE_COLOR, 26)
+        _casino_banner(ss_img, draw, 340*ss, f"No match — lost {bet}", CASINO_LOSE_COLOR, 26*ss)
 
+    final = ss_img.resize((W, H), Image.LANCZOS)
     buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
+    final.save(buffer, format="PNG")
     buffer.seek(0)
     return discord.File(fp=buffer, filename="slots.png")
 
 
 def render_scratch_card_image(symbols: list, revealed: bool, cost: int, payout: int = None, winning_symbol: str = None) -> discord.File:
     W, H = 420, 500
-    img = Image.new("RGB", (W, H), CASINO_BG_COLOR)
-    draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle([8, 8, W-8, H-8], radius=24, outline=CASINO_BORDER_COLOR, width=6)
-    draw.text((W/2, 45), "SCRATCH CARD", font=_casino_font(True, 32), fill=CASINO_BORDER_COLOR, anchor="mm")
+    ss_img, draw, ss = _casino_frame(W, H, "SCRATCH CARD")
 
     grid_top, cell, gap = 80, 100, 12
     grid_w = cell*3 + gap*2
@@ -1532,66 +1597,83 @@ def render_scratch_card_image(symbols: list, revealed: bool, cost: int, payout: 
 
     for i in range(9):
         row, col = divmod(i, 3)
-        x0 = start_x + col*(cell+gap)
-        y0 = grid_top + row*(cell+gap)
+        x0 = (start_x + col*(cell+gap)) * ss
+        y0 = (grid_top + row*(cell+gap)) * ss
+        x1, y1 = x0 + cell*ss, y0 + cell*ss
+
+        _drop_shadow(ss_img, [x0, y0, x1, y1], radius=10*ss, blur=5*ss, offset=(0, 3*ss))
 
         if revealed:
             is_winning_cell = winning_symbol and symbols[i] == winning_symbol
             border_color = CASINO_WIN_COLOR if is_winning_cell else (90, 60, 30)
             border_width = 5 if is_winning_cell else 3
-            draw.rounded_rectangle([x0, y0, x0+cell, y0+cell], radius=10, fill=CASINO_PANEL_BG, outline=border_color, width=border_width)
-            CASINO_ICON_DRAWERS[symbols[i]](draw, x0+cell/2, y0+cell/2, cell*0.34)
+            draw.rounded_rectangle([x0, y0, x1, y1], radius=10*ss, fill=CASINO_PANEL_BG, outline=border_color, width=border_width*ss)
+            CASINO_ICON_DRAWERS[symbols[i]](draw, (x0+x1)/2, (y0+y1)/2, cell*ss*0.34)
         else:
-            # Draw hidden "foil" cells on their own small canvas first, then paste —
-            # keeps the diagonal hatch pattern clipped to the cell instead of bleeding
-            # across the whole image.
-            cell_img = Image.new("RGB", (cell, cell), CASINO_BG_COLOR)
-            cell_draw = ImageDraw.Draw(cell_img)
-            cell_draw.rounded_rectangle([0, 0, cell-1, cell-1], radius=10, fill=(160, 160, 170), outline=(90, 60, 30), width=3)
-            for k in range(-cell, cell, 10):
-                cell_draw.line([k, cell, k+cell, 0], fill=(140, 140, 150), width=3)
-            cell_draw.rounded_rectangle([0, 0, cell-1, cell-1], radius=10, outline=(90, 60, 30), width=3)
-            cell_draw.text((cell/2, cell/2), "?", font=_casino_font(True, int(cell*0.36)), fill=(200, 200, 210), anchor="mm")
-            img.paste(cell_img, (int(x0), int(y0)))
+            # Foil cell with a gradient sheen + diagonal hatch, drawn on its own
+            # canvas (with a rounded-corner mask) then pasted — keeps effects
+            # clipped to the cell instead of bleeding across the image.
+            cell_size = int(cell * ss)
+            cell_img = Image.new("RGB", (cell_size, cell_size), (0, 0, 0))
+            cell_img.paste(_radial_gradient((cell_size, cell_size), (200, 200, 210), (140, 140, 155)), (0, 0))
+            cdraw = ImageDraw.Draw(cell_img)
+            for k in range(-cell_size, cell_size, 9*ss):
+                cdraw.line([k, cell_size, k+cell_size, 0], fill=(170, 170, 185), width=3*ss)
+            cdraw.rounded_rectangle([0, 0, cell_size-1, cell_size-1], radius=10*ss, outline=(90, 60, 30), width=3*ss)
+            cdraw.text((cell_size/2, cell_size/2), "?", font=_casino_font(True, int(cell_size*0.36)), fill=(210, 210, 220), anchor="mm")
 
-    draw.text((W/2, grid_top + 3*(cell+gap) + 15), f"Cost: {cost} coins", font=_casino_font(False, 18), fill=(230, 230, 230), anchor="mm")
+            mask = Image.new("L", (cell_size, cell_size), 0)
+            ImageDraw.Draw(mask).rounded_rectangle([0, 0, cell_size-1, cell_size-1], radius=10*ss, fill=255)
+            ss_img.paste(cell_img, (int(x0), int(y0)), mask)
+
+    draw.text((W*ss/2, (grid_top + 3*(cell+gap) + 15)*ss), f"Cost: {cost} coins", font=_casino_font(False, 18*ss), fill=(225, 225, 225), anchor="mm")
 
     if revealed:
         if payout:
-            _casino_banner(img, draw, H-70, f"WINNER! +{payout}", CASINO_WIN_COLOR, 28)
+            _casino_banner(ss_img, draw, (H-70)*ss, f"WINNER! +{payout}", CASINO_WIN_COLOR, 28*ss)
         else:
-            _casino_banner(img, draw, H-70, "No matches this time", CASINO_LOSE_COLOR, 24)
+            _casino_banner(ss_img, draw, (H-70)*ss, "No matches this time", CASINO_LOSE_COLOR, 24*ss)
     else:
-        _casino_banner(img, draw, H-70, "Click Scratch to reveal!", CASINO_PUSH_COLOR, 22)
+        _casino_banner(ss_img, draw, (H-70)*ss, "Click Scratch to reveal!", CASINO_PUSH_COLOR, 22*ss)
 
+    final = ss_img.resize((W, H), Image.LANCZOS)
     buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
+    final.save(buffer, format="PNG")
     buffer.seek(0)
     return discord.File(fp=buffer, filename="scratch.png")
 
 
 def render_coinflip_image(result_side: str, win: bool, bet: int, payout: int) -> discord.File:
     W, H = 400, 400
-    img = Image.new("RGB", (W, H), CASINO_BG_COLOR)
-    draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle([8, 8, W-8, H-8], radius=24, outline=CASINO_BORDER_COLOR, width=6)
-    draw.text((W/2, 45), "COINFLIP", font=_casino_font(True, 32), fill=CASINO_BORDER_COLOR, anchor="mm")
+    ss_img, draw, ss = _casino_frame(W, H, "COINFLIP")
 
-    cx, cy, r = W/2, 190, 110
-    draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(230, 185, 60), outline=(150, 110, 20), width=6)
-    draw.ellipse([cx-r+14, cy-r+14, cx+r-14, cy+r-14], outline=(180, 140, 40), width=4)
+    cx, cy, r = W*ss/2, 190*ss, 110*ss
+    _drop_shadow(ss_img, [cx-r, cy-r, cx+r, cy+r], radius=int(r), blur=8*ss, offset=(0, 5*ss))
+
+    coin_size = int(r * 2)
+    coin_grad = _radial_gradient((coin_size, coin_size), (250, 215, 110), (190, 140, 40))
+    mask = Image.new("L", (coin_size, coin_size), 0)
+    ImageDraw.Draw(mask).ellipse([0, 0, coin_size-1, coin_size-1], fill=255)
+    ss_img.paste(coin_grad, (int(cx-r), int(cy-r)), mask)
+
+    draw.ellipse([cx-r, cy-r, cx+r, cy+r], outline=(150, 110, 20), width=6*ss)
+    draw.ellipse([cx-r+14*ss, cy-r+14*ss, cx+r-14*ss, cy+r-14*ss], outline=(180, 140, 40), width=3*ss)
+
     letter = "H" if result_side == "heads" else "T"
-    draw.text((cx, cy), letter, font=_casino_font(True, 90), fill=(120, 85, 15), anchor="mm")
+    f_coin = _casino_font(True, 90*ss)
+    draw.text((cx+3*ss, cy+3*ss), letter, font=f_coin, fill=(140, 100, 20), anchor="mm")
+    draw.text((cx, cy), letter, font=f_coin, fill=(90, 60, 10), anchor="mm")
 
-    draw.text((W/2, 320), f"Result: {result_side.title()}  |  Bet: {bet}", font=_casino_font(False, 18), fill=(230, 230, 230), anchor="mm")
+    draw.text((W*ss/2, 320*ss), f"Result: {result_side.title()}  |  Bet: {bet}", font=_casino_font(False, 18*ss), fill=(225, 225, 225), anchor="mm")
 
     if win:
-        _casino_banner(img, draw, 360, f"YOU WON +{payout}", CASINO_WIN_COLOR, 26)
+        _casino_banner(ss_img, draw, 360*ss, f"YOU WON +{payout}", CASINO_WIN_COLOR, 26*ss)
     else:
-        _casino_banner(img, draw, 360, f"You lost {bet}", CASINO_LOSE_COLOR, 26)
+        _casino_banner(ss_img, draw, 360*ss, f"You lost {bet}", CASINO_LOSE_COLOR, 26*ss)
 
+    final = ss_img.resize((W, H), Image.LANCZOS)
     buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
+    final.save(buffer, format="PNG")
     buffer.seek(0)
     return discord.File(fp=buffer, filename="coinflip.png")
 
@@ -2098,9 +2180,9 @@ async def send_voice_message(channel_id: int):
 
 
 async def handle_voice_mention_easter_egg(message: discord.Message):
-    """If VOICE_MENTION_TARGET_USER_ID is mentioned in a message, post the
-    configured voice clip in response."""
-    if any(user.id == VOICE_MENTION_TARGET_USER_ID for user in message.mentions):
+    """If VOICE_MENTION_TARGET_USER_ID is explicitly @mentioned (not just
+    replied to with the ping toggle on), post the configured voice clip."""
+    if VOICE_MENTION_PATTERN.search(message.content):
         await send_voice_message(message.channel.id)
 
 
