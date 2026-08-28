@@ -113,15 +113,19 @@ Whenever the user with ID `764457716110327809` is @mentioned by anyone in a mess
 ## Currency & Gambling
 Everyone starts with **100 coins** (🪙), tracked in the same `scores.json` file as wins/streaks. New users get the starting balance the first time they check their balance or gamble.
 
+All three games render as actual generated images — a dark green felt background, gold trim, and hand-drawn icons (real full-color emoji like 🍒 can't be rendered through a regular font, so each symbol is custom-drawn) — rather than plain text or embeds. This uses the same PIL-based rendering approach as the chess board.
+
 - `/gambling` — opens a private menu with three buttons: Slots, Coinflip, Scratch Card
-  - **Slots**: enter a bet, spin 3 reels. All three matching = jackpot (payout scales by symbol rarity: 🍒 2x, 🍋 3x, 🍇 4x, 💎 10x, 7️⃣ 25x). Two matching = bet refunded. No match = bet lost. Tuned to roughly a 75% return-to-player rate (some house edge, same idea as a real slot machine).
-  - **Coinflip**: enter a bet and call heads or tails. Correct guess doubles your bet; wrong loses it.
-  - **Scratch Card**: fixed 50-coin cost, reveals a 3x3 grid of hidden symbols by clicking cells (or use "Reveal All" for instant results). Getting 3+ of the same symbol pays out based on rarity (🍀 miss, ⭐ 1x, 💰 2x, 💎 4x, 👑 10x). Tuned to roughly 50% RTP.
+  - **Slots**: enter a bet, spin 3 reels shown on a mini slot-machine graphic. All three matching = jackpot (payout scales by symbol rarity: cherry 2x, lemon 3x, grape 4x, diamond 10x, seven 25x). Two matching = bet refunded. No match = bet lost. Tuned to roughly a 75% return-to-player rate.
+  - **Coinflip**: enter a bet and call heads or tails. Result shown on a large rendered coin. Correct guess doubles your bet; wrong loses it.
+  - **Scratch Card**: fixed 50-coin cost. Shows a 3x3 grid of hidden "foil" cells; click **Scratch!** to reveal all 9 at once, with winning cells highlighted in gold. Getting 3+ of the same symbol pays out based on rarity (clover = miss, star 1x, moneybag 2x, diamond 4x, crown 10x). Tuned to roughly 50% RTP.
 - `/balance @user` — check your (or someone else's) coin balance
 - `/give @user amount` — send coins to another user directly
 - `/cheatcoins code:123123 user:@someone amount:500` — manually sets a user's coin balance (same code as `/cheat`). Private response.
 
-**On the odds:** these were simulated (500k+ trials) before shipping to keep the "house" from bleeding money over time — the original scratch card math actually let players win more than they spent on average (a real bug, caught and fixed). If you want to adjust payouts or odds later, everything lives in the `SLOT_SYMBOLS` and `SCRATCH_SYMBOLS` lists near the top of `flag_bot.py` — just re-simulate before changing them live, since small multiplier tweaks can swing the payout rate a lot.
+**On the odds:** these were simulated (300k+ trials) before shipping to keep the "house" from bleeding money over time — the original scratch card math actually let players win more than they spent on average (a real bug, caught and fixed before release). If you want to adjust payouts or odds later, everything lives in the `SLOT_SYMBOLS` and `SCRATCH_SYMBOLS` lists in the gambling section of `flag_bot.py` — just re-simulate before changing them live, since small multiplier tweaks can swing the payout rate a lot.
+
+**On the visuals:** all icon drawing and image rendering happens in Python using Pillow (already a dependency from the chess feature) — no extra setup needed beyond the font files already bundled in `assets/` for chess. This adds `assets/DejaVuSans-Bold.ttf` as an additional bundled font (used for the bold titles/banners on the casino graphics) — make sure that file is uploaded to your repo's `assets` folder alongside the others.
 
 ## Removed features
 Voice/music commands (`/play`, `/vskip`, `/stop`, `/queue`, `/nowplaying`, `/join`, `/lofi`, `/panel`) have been removed, along with their dependencies (`yt-dlp`, `PyNaCl`, `davey`) and the `nixpacks.toml` file that installed `ffmpeg`/`libopus0` for them. If you want voice features back later, this is recoverable — just ask.

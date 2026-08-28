@@ -932,6 +932,7 @@ async def tictactoe_command(interaction: discord.Interaction, opponent: discord.
 # image sidesteps both entirely and looks like an actual chessboard.
 
 import io
+import math
 import chess as chesslib
 from PIL import Image, ImageDraw, ImageFont
 
@@ -1334,25 +1335,129 @@ async def rps_command(interaction: discord.Interaction, opponent: discord.Member
 # ----------------------------------------------------------------------
 # GAMBLING
 # ----------------------------------------------------------------------
+# Games are rendered as actual images (not plain text/emoji) using a
+# consistent "casino" visual style — dark felt background, gold trim,
+# hand-drawn icons. Full-color emoji (🍒🍋💎 etc.) can't be rendered through
+# a regular font, so each symbol is drawn from scratch with PIL primitives.
 
-# (symbol, weight, payout_multiplier) — higher weight = more common.
+CASINO_BG_COLOR = (10, 51, 33)
+CASINO_BORDER_COLOR = (212, 175, 55)
+CASINO_PANEL_BG = (250, 248, 240)
+CASINO_WIN_COLOR = (255, 215, 60)
+CASINO_LOSE_COLOR = (230, 90, 90)
+CASINO_PUSH_COLOR = (200, 200, 200)
+
+_CASINO_FONT_BOLD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "DejaVuSans-Bold.ttf")
+_CASINO_FONT_REGULAR_PATH = _CHESS_FONT_PATH  # same bundled font already used for chess
+
+
+def _casino_font(bold: bool, size: int) -> ImageFont.FreeTypeFont:
+    path = _CASINO_FONT_BOLD_PATH if bold else _CASINO_FONT_REGULAR_PATH
+    try:
+        return ImageFont.truetype(path, size)
+    except OSError:
+        return ImageFont.load_default()
+
+
+# --- hand-drawn icons (each takes draw context, center x/y, radius) ---
+
+def _icon_cherry(draw, cx, cy, r):
+    off = r * 0.35
+    draw.ellipse([cx-off-r*0.55, cy+off-r*0.4, cx-off+r*0.55, cy+off+r*0.75], fill=(200,20,40), outline=(120,0,20), width=3)
+    draw.ellipse([cx+off-r*0.55, cy+off-r*0.4, cx+off+r*0.55, cy+off+r*0.75], fill=(200,20,40), outline=(120,0,20), width=3)
+    draw.line([cx-off, cy+off-r*0.3, cx, cy-r*0.9], fill=(60,120,40), width=5)
+    draw.line([cx+off, cy+off-r*0.3, cx, cy-r*0.9], fill=(60,120,40), width=5)
+    draw.ellipse([cx-r*0.3, cy-r*1.1, cx+r*0.35, cy-r*0.7], fill=(60,150,60), outline=(30,90,30), width=2)
+
+
+def _icon_lemon(draw, cx, cy, r):
+    draw.ellipse([cx-r*0.8, cy-r*0.6, cx+r*0.8, cy+r*0.6], fill=(245,210,40), outline=(180,150,10), width=4)
+    draw.ellipse([cx-r*0.95, cy-r*0.12, cx-r*0.65, cy+r*0.12], fill=(245,210,40), outline=(180,150,10), width=2)
+    draw.ellipse([cx+r*0.65, cy-r*0.12, cx+r*0.95, cy+r*0.12], fill=(245,210,40), outline=(180,150,10), width=2)
+
+
+def _icon_grape(draw, cx, cy, r):
+    positions = [(-0.4,-0.5),(0.4,-0.5),(0,-0.1),(-0.7,0.2),(0.7,0.2),(-0.35,0.55),(0.35,0.55),(0,0.9)]
+    for dx, dy in positions:
+        x, y = cx + dx*r*0.9, cy + dy*r*0.9
+        draw.ellipse([x-r*0.32, y-r*0.32, x+r*0.32, y+r*0.32], fill=(120,40,150), outline=(70,15,100), width=2)
+    draw.line([cx, cy-r*1.1, cx, cy-r*0.6], fill=(60,120,40), width=4)
+
+
+def _icon_diamond(draw, cx, cy, r):
+    pts = [(cx, cy-r), (cx+r*0.75, cy-r*0.15), (cx, cy+r), (cx-r*0.75, cy-r*0.15)]
+    draw.polygon(pts, fill=(80,220,235), outline=(20,140,160))
+    draw.line([cx, cy-r, cx, cy+r], fill=(255,255,255), width=2)
+    draw.line([cx-r*0.75, cy-r*0.15, cx+r*0.75, cy-r*0.15], fill=(255,255,255), width=2)
+
+
+def _icon_seven(draw, cx, cy, r):
+    font = _casino_font(True, int(r*2.2))
+    for dx, dy in [(-2,-2),(-2,2),(2,-2),(2,2)]:
+        draw.text((cx+dx, cy+dy), "7", font=font, fill=(120,0,0), anchor="mm")
+    draw.text((cx, cy), "7", font=font, fill=(230,30,30), anchor="mm")
+
+
+def _icon_clover(draw, cx, cy, r):
+    off = r*0.42
+    for dx, dy in [(-off,-off),(off,-off),(-off,off),(off,off)]:
+        draw.ellipse([cx+dx-r*0.45, cy+dy-r*0.45, cx+dx+r*0.45, cy+dy+r*0.45], fill=(50,160,70), outline=(20,100,40), width=2)
+    draw.line([cx, cy+r*0.3, cx, cy+r*1.15], fill=(40,110,40), width=5)
+
+
+def _icon_star(draw, cx, cy, r):
+    pts = []
+    for i in range(10):
+        angle = math.pi/2 + i*math.pi/5
+        rad = r if i % 2 == 0 else r*0.42
+        pts.append((cx + rad*math.cos(angle), cy - rad*math.sin(angle)))
+    draw.polygon(pts, fill=(250,200,40), outline=(180,130,10), width=2)
+
+
+def _icon_moneybag(draw, cx, cy, r):
+    draw.ellipse([cx-r*0.85, cy-r*0.2, cx+r*0.85, cy+r*0.95], fill=(150,110,60), outline=(90,60,25), width=3)
+    draw.polygon([(cx-r*0.4, cy-r*0.15),(cx+r*0.4, cy-r*0.15),(cx+r*0.15,cy-r*0.7),(cx-r*0.15,cy-r*0.7)], fill=(150,110,60), outline=(90,60,25))
+    draw.line([cx-r*0.15, cy-r*0.68, cx-r*0.35, cy-r*0.95], fill=(90,60,25), width=4)
+    draw.line([cx+r*0.15, cy-r*0.68, cx+r*0.35, cy-r*0.95], fill=(90,60,25), width=4)
+    font = _casino_font(True, int(r*0.7))
+    draw.text((cx, cy+r*0.35), "$", font=font, fill=(255,230,150), anchor="mm")
+
+
+def _icon_crown(draw, cx, cy, r):
+    base_y = cy + r*0.5
+    pts = [
+        (cx-r*0.9, base_y), (cx-r*0.9, cy),
+        (cx-r*0.45, cy+r*0.3), (cx, cy-r*0.9),
+        (cx+r*0.45, cy+r*0.3), (cx+r*0.9, cy),
+        (cx+r*0.9, base_y),
+    ]
+    draw.polygon(pts, fill=(250,210,60), outline=(180,140,10), width=3)
+
+
+CASINO_ICON_DRAWERS = {
+    "cherry": _icon_cherry, "lemon": _icon_lemon, "grape": _icon_grape,
+    "diamond": _icon_diamond, "seven": _icon_seven,
+    "clover": _icon_clover, "star": _icon_star, "moneybag": _icon_moneybag, "crown": _icon_crown,
+}
+
+# (symbol_key, weight, payout_multiplier) — higher weight = more common.
 SLOT_SYMBOLS = [
-    ("🍒", 30, 2),
-    ("🍋", 25, 3),
-    ("🍇", 20, 4),
-    ("💎", 10, 10),
-    ("7️⃣", 5, 25),
+    ("cherry", 30, 2),
+    ("lemon", 25, 3),
+    ("grape", 20, 4),
+    ("diamond", 10, 10),
+    ("seven", 5, 25),
 ]
 
 SCRATCH_COST = 50
-# (symbol, weight, payout_multiplier_of_cost) — 0 payout = a "miss" symbol.
-# Tuned to roughly 50% RTP (return-to-player) — see simulation notes below.
+# (symbol_key, weight, payout_multiplier_of_cost) — 0 payout = a "miss" symbol.
+# Tuned to roughly 50% RTP (return-to-player) — see simulation notes in README.
 SCRATCH_SYMBOLS = [
-    ("🍀", 60, 0),
-    ("⭐", 22, 1),
-    ("💰", 12, 2),
-    ("💎", 5, 4),
-    ("👑", 1, 10),
+    ("clover", 60, 0),
+    ("star", 22, 1),
+    ("moneybag", 12, 2),
+    ("diamond", 5, 4),
+    ("crown", 1, 10),
 ]
 
 
@@ -1366,6 +1471,129 @@ def weighted_choice(options: list):
         if r <= upto:
             return option
     return options[-1]
+
+
+def _casino_banner(img: Image.Image, draw: ImageDraw.ImageDraw, cy: int, text: str, color, font_size: int = 30):
+    font = _casino_font(True, font_size)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w = bbox[2] - bbox[0]
+    pad = 20
+    draw.rounded_rectangle(
+        [img.width/2 - w/2 - pad, cy-28, img.width/2 + w/2 + pad, cy+28],
+        radius=14, fill=(0, 0, 0),
+    )
+    draw.text((img.width/2, cy), text, font=font, fill=color, anchor="mm")
+
+
+def render_slots_image(symbols: list, bet: int, payout: int, outcome: str) -> discord.File:
+    W, H = 500, 420
+    img = Image.new("RGB", (W, H), CASINO_BG_COLOR)
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([8, 8, W-8, H-8], radius=24, outline=CASINO_BORDER_COLOR, width=6)
+
+    draw.text((W/2, 50), "SLOTS", font=_casino_font(True, 40), fill=CASINO_BORDER_COLOR, anchor="mm")
+
+    body_top, body_bottom = 90, 260
+    draw.rounded_rectangle([40, body_top, W-40, body_bottom], radius=18, fill=(40, 25, 15), outline=CASINO_BORDER_COLOR, width=4)
+
+    reel_w = (W - 120) / 3
+    for i, sym in enumerate(symbols):
+        x0 = 60 + i * (reel_w + 10)
+        x1 = x0 + reel_w
+        draw.rounded_rectangle([x0, body_top+20, x1, body_bottom-20], radius=10, fill=CASINO_PANEL_BG, outline=(90, 60, 30), width=3)
+        cx, cy = (x0+x1)/2, (body_top+20 + body_bottom-20)/2
+        CASINO_ICON_DRAWERS[sym](draw, cx, cy, reel_w*0.32)
+
+    draw.text((W/2, 290), f"Bet: {bet} coins", font=_casino_font(False, 20), fill=(230, 230, 230), anchor="mm")
+
+    if outcome == "jackpot":
+        _casino_banner(img, draw, 340, f"JACKPOT! +{payout}", CASINO_WIN_COLOR, 32)
+    elif outcome == "push":
+        _casino_banner(img, draw, 340, "Two matched — refunded", CASINO_PUSH_COLOR, 24)
+    else:
+        _casino_banner(img, draw, 340, f"No match — lost {bet}", CASINO_LOSE_COLOR, 26)
+
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return discord.File(fp=buffer, filename="slots.png")
+
+
+def render_scratch_card_image(symbols: list, revealed: bool, cost: int, payout: int = None, winning_symbol: str = None) -> discord.File:
+    W, H = 420, 500
+    img = Image.new("RGB", (W, H), CASINO_BG_COLOR)
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([8, 8, W-8, H-8], radius=24, outline=CASINO_BORDER_COLOR, width=6)
+    draw.text((W/2, 45), "SCRATCH CARD", font=_casino_font(True, 32), fill=CASINO_BORDER_COLOR, anchor="mm")
+
+    grid_top, cell, gap = 80, 100, 12
+    grid_w = cell*3 + gap*2
+    start_x = (W - grid_w) / 2
+
+    for i in range(9):
+        row, col = divmod(i, 3)
+        x0 = start_x + col*(cell+gap)
+        y0 = grid_top + row*(cell+gap)
+
+        if revealed:
+            is_winning_cell = winning_symbol and symbols[i] == winning_symbol
+            border_color = CASINO_WIN_COLOR if is_winning_cell else (90, 60, 30)
+            border_width = 5 if is_winning_cell else 3
+            draw.rounded_rectangle([x0, y0, x0+cell, y0+cell], radius=10, fill=CASINO_PANEL_BG, outline=border_color, width=border_width)
+            CASINO_ICON_DRAWERS[symbols[i]](draw, x0+cell/2, y0+cell/2, cell*0.34)
+        else:
+            # Draw hidden "foil" cells on their own small canvas first, then paste —
+            # keeps the diagonal hatch pattern clipped to the cell instead of bleeding
+            # across the whole image.
+            cell_img = Image.new("RGB", (cell, cell), CASINO_BG_COLOR)
+            cell_draw = ImageDraw.Draw(cell_img)
+            cell_draw.rounded_rectangle([0, 0, cell-1, cell-1], radius=10, fill=(160, 160, 170), outline=(90, 60, 30), width=3)
+            for k in range(-cell, cell, 10):
+                cell_draw.line([k, cell, k+cell, 0], fill=(140, 140, 150), width=3)
+            cell_draw.rounded_rectangle([0, 0, cell-1, cell-1], radius=10, outline=(90, 60, 30), width=3)
+            cell_draw.text((cell/2, cell/2), "?", font=_casino_font(True, int(cell*0.36)), fill=(200, 200, 210), anchor="mm")
+            img.paste(cell_img, (int(x0), int(y0)))
+
+    draw.text((W/2, grid_top + 3*(cell+gap) + 15), f"Cost: {cost} coins", font=_casino_font(False, 18), fill=(230, 230, 230), anchor="mm")
+
+    if revealed:
+        if payout:
+            _casino_banner(img, draw, H-70, f"WINNER! +{payout}", CASINO_WIN_COLOR, 28)
+        else:
+            _casino_banner(img, draw, H-70, "No matches this time", CASINO_LOSE_COLOR, 24)
+    else:
+        _casino_banner(img, draw, H-70, "Click Scratch to reveal!", CASINO_PUSH_COLOR, 22)
+
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return discord.File(fp=buffer, filename="scratch.png")
+
+
+def render_coinflip_image(result_side: str, win: bool, bet: int, payout: int) -> discord.File:
+    W, H = 400, 400
+    img = Image.new("RGB", (W, H), CASINO_BG_COLOR)
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([8, 8, W-8, H-8], radius=24, outline=CASINO_BORDER_COLOR, width=6)
+    draw.text((W/2, 45), "COINFLIP", font=_casino_font(True, 32), fill=CASINO_BORDER_COLOR, anchor="mm")
+
+    cx, cy, r = W/2, 190, 110
+    draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=(230, 185, 60), outline=(150, 110, 20), width=6)
+    draw.ellipse([cx-r+14, cy-r+14, cx+r-14, cy+r-14], outline=(180, 140, 40), width=4)
+    letter = "H" if result_side == "heads" else "T"
+    draw.text((cx, cy), letter, font=_casino_font(True, 90), fill=(120, 85, 15), anchor="mm")
+
+    draw.text((W/2, 320), f"Result: {result_side.title()}  |  Bet: {bet}", font=_casino_font(False, 18), fill=(230, 230, 230), anchor="mm")
+
+    if win:
+        _casino_banner(img, draw, 360, f"YOU WON +{payout}", CASINO_WIN_COLOR, 26)
+    else:
+        _casino_banner(img, draw, 360, f"You lost {bet}", CASINO_LOSE_COLOR, 26)
+
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return discord.File(fp=buffer, filename="coinflip.png")
 
 
 class GamblingHubView(discord.ui.View):
@@ -1397,9 +1625,12 @@ class GamblingHubView(discord.ui.View):
             )
             return
         add_balance(self.user_id, -SCRATCH_COST)
+
         view = ScratchCardView(self.user_id)
+        image_file = render_scratch_card_image(view.symbols, revealed=False, cost=SCRATCH_COST)
         await interaction.response.send_message(
-            f"🎫 Scratch card purchased for {format_coins(SCRATCH_COST)}! Click the cells to scratch them.",
+            f"🎫 Card purchased for {format_coins(SCRATCH_COST)}! Click Scratch to reveal.",
+            file=image_file,
             view=view,
             ephemeral=True,
         )
@@ -1424,9 +1655,7 @@ class SlotsBetModal(discord.ui.Modal, title="🎰 Slots"):
 
         balance = get_balance(self.user_id)
         if bet > balance:
-            await interaction.response.send_message(
-                f"You only have {format_coins(balance)}.", ephemeral=True
-            )
+            await interaction.response.send_message(f"You only have {format_coins(balance)}.", ephemeral=True)
             return
 
         add_balance(self.user_id, -bet)
@@ -1434,21 +1663,23 @@ class SlotsBetModal(discord.ui.Modal, title="🎰 Slots"):
 
         reels = [weighted_choice(SLOT_SYMBOLS) for _ in range(3)]
         symbols = [r[0] for r in reels]
-        display = " | ".join(symbols)
 
         if symbols[0] == symbols[1] == symbols[2]:
             payout = bet * reels[0][2]
             add_balance(self.user_id, payout)
-            result = f"🎉 JACKPOT! All three match! You won {format_coins(payout)}!"
+            outcome = "jackpot"
         elif symbols[0] == symbols[1] or symbols[1] == symbols[2] or symbols[0] == symbols[2]:
             add_balance(self.user_id, bet)  # break even
-            result = "🤏 Two matched — bet refunded, no profit."
+            payout = 0
+            outcome = "push"
         else:
-            result = f"😔 No match. You lost {format_coins(bet)}."
+            payout = 0
+            outcome = "lose"
 
         new_balance = get_balance(self.user_id)
+        image_file = render_slots_image(symbols, bet, payout, outcome)
         await interaction.edit_original_response(
-            content=f"🎰 [ {display} ]\n\n{result}\n\nBalance: {format_coins(new_balance)}"
+            content=f"Balance: {format_coins(new_balance)}", attachments=[image_file]
         )
 
 
@@ -1482,64 +1713,57 @@ class CoinflipModal(discord.ui.Modal, title="🪙 Coinflip"):
 
         add_balance(self.user_id, -bet)
         result_flip = random.choice(["heads", "tails"])
-        flip_emoji = "🪙"
-
-        if guess == result_flip:
-            payout = bet * 2
+        win = guess == result_flip
+        payout = bet * 2 if win else 0
+        if win:
             add_balance(self.user_id, payout)
-            outcome = f"🎉 It was **{result_flip}**! You won {format_coins(payout)}!"
-        else:
-            outcome = f"😔 It was **{result_flip}**. You lost {format_coins(bet)}."
 
         new_balance = get_balance(self.user_id)
+        image_file = render_coinflip_image(result_flip, win, bet, payout)
         await interaction.response.send_message(
-            f"{flip_emoji} Flipping...\n\n{outcome}\n\nBalance: {format_coins(new_balance)}", ephemeral=True
+            content=f"Balance: {format_coins(new_balance)}", file=image_file, ephemeral=True
         )
 
 
-class ScratchCardButton(discord.ui.Button):
-    def __init__(self, index: int):
-        super().__init__(label="❓", style=discord.ButtonStyle.secondary, row=index // 3)
-        self.index = index
-
-    async def callback(self, interaction: discord.Interaction):
-        view: "ScratchCardView" = self.view
-        if interaction.user.id != view.user_id:
-            await interaction.response.send_message("This isn't your scratch card!", ephemeral=True)
-            return
-        if view.revealed[self.index]:
-            await interaction.response.send_message("Already scratched that one!", ephemeral=True)
-            return
-
-        view.reveal(self.index)
-        self.label = view.symbols[self.index]
-        self.disabled = True
-        self.style = discord.ButtonStyle.success
-
-        if all(view.revealed):
-            await view.finish(interaction)
-        else:
-            await interaction.response.edit_message(view=view)
-
-
-class ScratchCardRevealAllButton(discord.ui.Button):
+class ScratchCardRevealButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(label="Reveal All", emoji="✨", style=discord.ButtonStyle.primary, row=3)
+        super().__init__(label="Scratch!", emoji="🪙", style=discord.ButtonStyle.primary)
 
     async def callback(self, interaction: discord.Interaction):
         view: "ScratchCardView" = self.view
         if interaction.user.id != view.user_id:
             await interaction.response.send_message("This isn't your scratch card!", ephemeral=True)
             return
+        if view.revealed:
+            await interaction.response.send_message("Already scratched!", ephemeral=True)
+            return
 
-        for i, child in enumerate(view.children):
-            if isinstance(child, ScratchCardButton) and not view.revealed[i]:
-                view.reveal(i)
-                child.label = view.symbols[i]
-                child.disabled = True
-                child.style = discord.ButtonStyle.success
+        view.revealed = True
+        self.disabled = True
 
-        await view.finish(interaction)
+        counts = {}
+        for s in view.symbols:
+            counts[s] = counts.get(s, 0) + 1
+
+        best_mult, winning_symbol = 0, None
+        for symbol, count in counts.items():
+            if count >= 3:
+                mult = next((m for sym, w, m in SCRATCH_SYMBOLS if sym == symbol), 0)
+                if mult > best_mult:
+                    best_mult, winning_symbol = mult, symbol
+
+        payout = SCRATCH_COST * best_mult if winning_symbol and best_mult > 0 else 0
+        if payout > 0:
+            add_balance(view.user_id, payout)
+
+        new_balance = get_balance(view.user_id)
+        image_file = render_scratch_card_image(
+            view.symbols, revealed=True, cost=SCRATCH_COST,
+            payout=payout if payout > 0 else None, winning_symbol=winning_symbol,
+        )
+        await interaction.response.edit_message(
+            content=f"Balance: {format_coins(new_balance)}", attachments=[image_file], view=view
+        )
 
 
 class ScratchCardView(discord.ui.View):
@@ -1547,50 +1771,8 @@ class ScratchCardView(discord.ui.View):
         super().__init__(timeout=180)
         self.user_id = user_id
         self.symbols = [weighted_choice(SCRATCH_SYMBOLS)[0] for _ in range(9)]
-        self.revealed = [False] * 9
-        self.finished = False
-
-        for i in range(9):
-            self.add_item(ScratchCardButton(i))
-        self.add_item(ScratchCardRevealAllButton())
-
-    def reveal(self, index: int):
-        self.revealed[index] = True
-
-    async def finish(self, interaction: discord.Interaction):
-        if self.finished:
-            await interaction.response.edit_message(view=self)
-            return
-        self.finished = True
-
-        for child in self.children:
-            child.disabled = True
-
-        counts = {}
-        for s in self.symbols:
-            counts[s] = counts.get(s, 0) + 1
-
-        best_payout_multiplier = 0
-        winning_symbol = None
-        for symbol, count in counts.items():
-            if count >= 3:
-                multiplier = next((m for sym, w, m in SCRATCH_SYMBOLS if sym == symbol), 0)
-                if multiplier > best_payout_multiplier:
-                    best_payout_multiplier = multiplier
-                    winning_symbol = symbol
-
-        if winning_symbol and best_payout_multiplier > 0:
-            payout = SCRATCH_COST * best_payout_multiplier
-            add_balance(self.user_id, payout)
-            result_text = f"🎉 Three or more {winning_symbol}! You won {format_coins(payout)}!"
-        else:
-            result_text = "😔 No matches — better luck next time!"
-
-        new_balance = get_balance(self.user_id)
-        await interaction.response.edit_message(
-            content=f"🎫 Scratch card revealed!\n\n{result_text}\n\nBalance: {format_coins(new_balance)}",
-            view=self,
-        )
+        self.revealed = False
+        self.add_item(ScratchCardRevealButton())
 
 
 @bot.tree.command(name="gambling", description="Open the gambling menu — slots, coinflip, and scratch cards.")
@@ -1627,9 +1809,7 @@ async def give_command(interaction: discord.Interaction, user: discord.Member, a
 
     sender_balance = get_balance(interaction.user.id)
     if amount > sender_balance:
-        await interaction.response.send_message(
-            f"You only have {format_coins(sender_balance)}.", ephemeral=True
-        )
+        await interaction.response.send_message(f"You only have {format_coins(sender_balance)}.", ephemeral=True)
         return
 
     add_balance(interaction.user.id, -amount)
