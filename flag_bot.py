@@ -1355,13 +1355,31 @@ CASINO_SUPERSAMPLE = 3  # render at 3x then downscale for anti-aliased edges/tex
 
 _CASINO_FONT_BOLD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "DejaVuSans-Bold.ttf")
 _CASINO_FONT_REGULAR_PATH = _CHESS_FONT_PATH  # same bundled font already used for chess
+_casino_font_warned = False
 
 
 def _casino_font(bold: bool, size: int) -> ImageFont.FreeTypeFont:
+    """Loads the bold or regular casino font at the given size. If the bold
+    font file is missing, falls back to the regular font at the same large
+    size (still readable) rather than PIL's tiny fixed-size default font,
+    which is what caused illegible/invisible text in earlier versions."""
+    global _casino_font_warned
     path = _CASINO_FONT_BOLD_PATH if bold else _CASINO_FONT_REGULAR_PATH
     try:
         return ImageFont.truetype(path, size)
     except OSError:
+        if bold:
+            if not _casino_font_warned:
+                print(
+                    f"WARNING: {_CASINO_FONT_BOLD_PATH} not found — gambling images will use the "
+                    f"regular font instead of bold. Upload DejaVuSans-Bold.ttf to your assets folder to fix this."
+                )
+                _casino_font_warned = True
+            try:
+                return ImageFont.truetype(_CASINO_FONT_REGULAR_PATH, size)
+            except OSError:
+                pass
+        print(f"WARNING: font file not found at all ({path}) — falling back to a tiny placeholder font.")
         return ImageFont.load_default()
 
 
