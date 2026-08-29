@@ -140,6 +140,7 @@ DEFAULT_LOFI_STREAM = "https://www.youtube.com/watch?v=jfKfPfyJRdk"
 # tell users it's not configured.
 GIPHY_API_KEY = os.environ.get("GIPHY_API_KEY", "")
 OSAKA_SEARCH_TERMS = ["Osaka Azumanga Daioh", "Ayumu Kasuga anime"]
+DINO_SEARCH_TERMS = ["dinosaur", "dinosaurs fighting", "t-rex", "dinosaur battle"]
 
 # ----------------------------------------------------------------------
 # COUNTRY DATA: flag emoji -> accepted English names, accepted Arabic names
@@ -731,6 +732,54 @@ async def osaka_command(interaction: discord.Interaction):
 
     if not gif_url:
         await interaction.followup.send("Couldn't find an Osaka gif right now, try again!")
+        return
+
+    await interaction.followup.send(gif_url)
+
+
+@bot.tree.command(name="dino", description="Get a random dinosaur gif (sometimes two of them fighting)!")
+async def dino_command(interaction: discord.Interaction):
+    if not GIPHY_API_KEY:
+        await interaction.response.send_message(
+            "The bot owner hasn't set up a Giphy API key yet, so `/dino` isn't available. "
+            "(Free key at developers.giphy.com — add it as the GIPHY_API_KEY variable.)",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer()
+
+    query = random.choice(DINO_SEARCH_TERMS)
+    url = "https://api.giphy.com/v1/gifs/search"
+    params = {
+        "api_key": GIPHY_API_KEY,
+        "q": query,
+        "limit": 30,
+        "rating": "g",  # safe-for-work only
+        "lang": "en",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    await interaction.followup.send("Couldn't reach Giphy right now, try again in a bit.")
+                    return
+                data = await resp.json()
+    except (aiohttp.ClientError, TimeoutError):
+        await interaction.followup.send("Couldn't reach Giphy right now, try again in a bit.")
+        return
+
+    results = data.get("data", [])
+    if not results:
+        await interaction.followup.send("Couldn't find a dinosaur gif right now, try again!")
+        return
+
+    choice = random.choice(results)
+    gif_url = choice.get("images", {}).get("original", {}).get("url")
+
+    if not gif_url:
+        await interaction.followup.send("Couldn't find a dinosaur gif right now, try again!")
         return
 
     await interaction.followup.send(gif_url)
@@ -1986,6 +2035,11 @@ async def cmds_command(interaction: discord.Interaction):
         inline=False,
     )
     embed_en.add_field(
+        name="/dino",
+        value="Sends a random dinosaur gif (sometimes two of them fighting).",
+        inline=False,
+    )
+    embed_en.add_field(
         name="/ask",
         value="its under development still",
         inline=False,
@@ -2078,6 +2132,11 @@ async def cmds_command(interaction: discord.Interaction):
     embed_ar.add_field(
         name="/osaka",
         value="يرسل صورة متحركة عشوائية لشخصية أوساكا (أيومو كاسوغا).",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/dino",
+        value="يرسل صورة متحركة عشوائية لديناصور (أحياناً اثنان يتقاتلان).",
         inline=False,
     )
     embed_ar.add_field(

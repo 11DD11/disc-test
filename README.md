@@ -50,6 +50,7 @@ message and the bot announces the winner.
 - `/profile @user` — shows total wins, current streak, best-ever streak, and coin balance
 - `/dailychallenge` — one shared flag per day, everyone gets exactly one guess (right or wrong), resets at midnight server time. Whichever channel starts it first hosts it for the day.
 - `/osaka` — sends a random gif of Osaka (Ayumu Kasuga, from Azumanga Daioh). Requires a free Giphy API key (see below).
+- `/dino` — sends a random dinosaur gif, occasionally two of them fighting. Same Giphy setup as `/osaka`.
 - `/ask <question>` — currently a placeholder; replies "its under development still" regardless of what's asked.
 - `/quote` — sends a random short anime or video game quote from a curated list.
 - `/tictactoe @user` — challenges another member to Tic-Tac-Toe with a clickable 3x3 button grid. Only the two players can click; the game times out after 5 minutes of inactivity.
