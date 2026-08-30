@@ -443,6 +443,20 @@ async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
     try:
+        from PIL import features as _pil_features
+        has_raqm = _pil_features.check("raqm")
+        print(f"Pillow raqm text-shaping engine available: {has_raqm}")
+        if not has_raqm:
+            print(
+                "WARNING: raqm is unavailable, so /npc's Arabic text will render without "
+                "proper letter-joining or right-to-left ordering. This usually means libfribidi "
+                "isn't installed on this host — check that nixpacks.toml is present in the repo "
+                "and that Railway's build log shows it installing libfribidi0."
+            )
+    except Exception as e:
+        print(f"Could not check Pillow raqm support: {e}")
+
+    try:
         app_id = bot.application_id or (await bot.application_info()).id
         activity = discord.Activity(
             type=discord.ActivityType.playing,
@@ -1410,6 +1424,34 @@ CASINO_SUPERSAMPLE = 3  # render at 3x then downscale for anti-aliased edges/tex
 _CASINO_FONT_BOLD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "DejaVuSans-Bold.ttf")
 _CASINO_FONT_REGULAR_PATH = _CHESS_FONT_PATH  # same bundled font already used for chess
 _casino_font_warned = False
+_font_cmap_cache = {}
+
+
+def _get_font_cmap(path: str) -> set:
+    """Returns the set of Unicode codepoints a font file can actually render,
+    used to strip glyphs the font doesn't support (e.g. decorative symbols in
+    Discord nicknames) instead of letting them show up as empty "tofu" boxes."""
+    if path not in _font_cmap_cache:
+        try:
+            from fontTools.ttLib import TTFont
+            tt = TTFont(path)
+            _font_cmap_cache[path] = set(tt.getBestCmap().keys())
+        except Exception as e:
+            print(f"Could not read font cmap for {path}: {e}")
+            _font_cmap_cache[path] = None  # None = "couldn't check, allow everything"
+    return _font_cmap_cache[path]
+
+
+def sanitize_for_font(text: str, bold: bool = True) -> str:
+    """Strips characters the bundled font can't render, preventing empty
+    'tofu' box glyphs (common with decorative Discord nicknames using
+    symbols like ꧁꧂). Falls back to returning the text unchanged if the
+    font's coverage can't be determined."""
+    path = _CASINO_FONT_BOLD_PATH if bold else _CASINO_FONT_REGULAR_PATH
+    cmap = _get_font_cmap(path)
+    if cmap is None:
+        return text
+    return "".join(c for c in text if ord(c) in cmap or c.isspace())
 
 
 def _casino_font(bold: bool, size: int) -> ImageFont.FreeTypeFont:
@@ -2121,7 +2163,7 @@ async def npc_command(interaction: discord.Interaction, user: discord.Member = N
     dialogue = random.choice(NPC_LINES_AR)
     stat_value = random.randint(1, 99)  # same value used for every stat bar — that's the joke
 
-    image_file = _render_npc_card(avatar_img, target.display_name, role, dialogue, stat_value)
+    image_file = _render_npc_card(avatar_img, sanitize_for_font(target.display_name), role, dialogue, stat_value)
     await interaction.followup.send(file=image_file)
 
 

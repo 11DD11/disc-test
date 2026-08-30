@@ -2,3 +2,4 @@ discord.py>=2.6.0
 aiohttp>=3.8.0
 chess>=1.10.0
 Pillow>=10.0.0
+fonttools>=4.0.0
