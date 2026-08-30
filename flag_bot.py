@@ -2047,6 +2047,23 @@ async def cheatcoins_command(interaction: discord.Interaction, code: str, user: 
 # "raqm" text-layout engine handles both automatically as long as libfribidi
 # is present on the host at runtime (see nixpacks.toml, which installs it).
 
+# Arabic text needs letter-joining (shaping) and right-to-left reordering to
+# display correctly. Pillow can do this automatically via a bundled engine
+# called raqm, but that depends on a system library (libfribidi) being
+# present on the host, which turned out to be unreliable on Railway even
+# with it explicitly installed. This does the shaping/reordering ourselves
+# in pure Python instead, so it works regardless of what's on the host.
+def _prepare_arabic_text(text: str) -> str:
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        reshaped = arabic_reshaper.reshape(text)
+        return get_display(reshaped)
+    except Exception as e:
+        print(f"Arabic text shaping failed, showing raw text instead: {e}")
+        return text
+
+
 NPC_ROLES = [
     "Village Elder", "Wandering Merchant", "Tavern Keeper", "Random Guard #47",
     "Suspicious Blacksmith", "Quest Giver #12", "Retired Adventurer", "Potion Seller",
@@ -2113,11 +2130,21 @@ def _render_npc_card(avatar_img: Image.Image, username: str, role: str, dialogue
     if current:
         lines.append(current)
 
+    # Shape + reorder each line ourselves (see _prepare_arabic_text) rather than
+    # relying on Pillow's raqm engine, which needs a system library that wasn't
+    # reliably available at runtime. Since the text is already shaped/reordered,
+    # it must be drawn with Pillow's BASIC layout engine (no further processing)
+    # instead of the default — feeding pre-shaped text through raqm again would
+    # scramble it a second time. BASIC layout works regardless of whether raqm
+    # is even installed on the host, so this is safe either way.
+    display_lines = [_prepare_arabic_text(line) for line in lines]
+    f_dialogue_basic = ImageFont.truetype(_CASINO_FONT_REGULAR_PATH, 22*ss, layout_engine=ImageFont.Layout.BASIC)
+
     line_height = 32 * ss
-    total_h = len(lines) * line_height
+    total_h = len(display_lines) * line_height
     start_y = (box_top+box_bottom)/2 - total_h/2 + line_height/2
-    for i, line in enumerate(lines):
-        draw.text((W*ss/2, start_y + i*line_height), line, font=f_dialogue, fill=(30, 20, 40), anchor="mm")
+    for i, line in enumerate(display_lines):
+        draw.text((W*ss/2, start_y + i*line_height), line, font=f_dialogue_basic, fill=(30, 20, 40), anchor="mm")
 
     stats = ["STR", "INT", "LUCK", "RIZZ"]
     bar_top = box_bottom + 30*ss
