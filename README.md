@@ -51,7 +51,8 @@ message and the bot announces the winner.
 - `/dailychallenge` — one shared flag per day, everyone gets exactly one guess (right or wrong), resets at midnight server time. Whichever channel starts it first hosts it for the day.
 - `/osaka` — sends a random gif of Osaka (Ayumu Kasuga, from Azumanga Daioh). Requires a free Giphy API key (see below).
 - `/dino` — sends a random dinosaur gif, occasionally two of them fighting. Same Giphy setup as `/osaka`.
-- `/npc @user` — turns someone into a fake RPG "NPC encounter" card: their real avatar, a random made-up role (Village Elder, Suspicious Blacksmith, etc.), a random dialogue line in Arabic, and stat bars that are all suspiciously set to the exact same number (that's the joke). Defaults to yourself if no user is given.
+- `/fries` — sends a random fries (or potato) gif. Same Giphy setup as `/osaka`.
+- `/npc @user` — turns someone into a fake RPG "NPC encounter" card: their real avatar, a random made-up role (Village Elder, Suspicious Blacksmith, etc.), a random silly/funny dialogue line in Arabic (clean, no profanity), and stat bars that are all suspiciously set to the exact same number (that's the joke). Defaults to yourself if no user is given.
 - `/ask <question>` — currently a placeholder; replies "its under development still" regardless of what's asked.
 - `/quote` — sends a random short anime or video game quote from a curated list.
 - `/tictactoe @user` — challenges another member to Tic-Tac-Toe with a clickable 3x3 button grid. Only the two players can click; the game times out after 5 minutes of inactivity.

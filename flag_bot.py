@@ -146,6 +146,7 @@ DEFAULT_LOFI_STREAM = "https://www.youtube.com/watch?v=jfKfPfyJRdk"
 GIPHY_API_KEY = os.environ.get("GIPHY_API_KEY", "")
 OSAKA_SEARCH_TERMS = ["Osaka Azumanga Daioh", "Ayumu Kasuga anime"]
 DINO_SEARCH_TERMS = ["dinosaur", "dinosaurs fighting", "t-rex", "dinosaur battle"]
+FRIES_SEARCH_TERMS = ["french fries", "fries gif", "fries", "potato", "french fries funny"]
 
 # ----------------------------------------------------------------------
 # COUNTRY DATA: flag emoji -> accepted English names, accepted Arabic names
@@ -799,6 +800,54 @@ async def dino_command(interaction: discord.Interaction):
 
     if not gif_url:
         await interaction.followup.send("Couldn't find a dinosaur gif right now, try again!")
+        return
+
+    await interaction.followup.send(gif_url)
+
+
+@bot.tree.command(name="fries", description="Get a random fries (or potato) gif!")
+async def fries_command(interaction: discord.Interaction):
+    if not GIPHY_API_KEY:
+        await interaction.response.send_message(
+            "The bot owner hasn't set up a Giphy API key yet, so `/fries` isn't available. "
+            "(Free key at developers.giphy.com — add it as the GIPHY_API_KEY variable.)",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer()
+
+    query = random.choice(FRIES_SEARCH_TERMS)
+    url = "https://api.giphy.com/v1/gifs/search"
+    params = {
+        "api_key": GIPHY_API_KEY,
+        "q": query,
+        "limit": 30,
+        "rating": "g",  # safe-for-work only
+        "lang": "en",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    await interaction.followup.send("Couldn't reach Giphy right now, try again in a bit.")
+                    return
+                data = await resp.json()
+    except (aiohttp.ClientError, TimeoutError):
+        await interaction.followup.send("Couldn't reach Giphy right now, try again in a bit.")
+        return
+
+    results = data.get("data", [])
+    if not results:
+        await interaction.followup.send("Couldn't find a fries gif right now, try again!")
+        return
+
+    choice = random.choice(results)
+    gif_url = choice.get("images", {}).get("original", {}).get("url")
+
+    if not gif_url:
+        await interaction.followup.send("Couldn't find a fries gif right now, try again!")
         return
 
     await interaction.followup.send(gif_url)
@@ -2070,14 +2119,18 @@ NPC_ROLES = [
 ]
 
 NPC_LINES_AR = [
-    "هل تريد شراء بضاعتي؟",
-    "الطريق إلى القرية محفوف بالمخاطر.",
-    "لا أملك مهمات لك اليوم.",
-    "استمع، هذا مهم جداً!",
-    "سمعت شائعات عن كنز مخفي بالقرب من هنا.",
-    "عد لاحقاً، أنا مشغول الآن.",
-    "هذه الأرض لم تعد آمنة كما كانت.",
-    "أتبحث عن مغامرة؟ لدي عمل لك.",
+    "أبيع البطاطا بسعر الذهب اليوم.",
+    "لماذا تنظر إلي هكذا؟ اذهب اضغط على شيء آخر.",
+    "أنا لست NPC، أنا فقط أتصرف بغرابة.",
+    "قابلت تنيناً أمس، كان يشتكي من الإيجار.",
+    "خبز اليوم طازج... من الأسبوع الماضي.",
+    "إذا ضغطت علي مرة أخرى سأبدأ بالبكاء.",
+    "أملك سيفاً سحرياً لكنه في الغسيل حالياً.",
+    "الحكيم يقول: لا تأكل الفطر الغريب.",
+    "أعمل هنا منذ ٣٠٠ عام، لم يعطوني إجازة قط.",
+    "توقف عن الضغط، أنا أحاول أن آخذ قيلولة.",
+    "لدي مهمة لك: أحضر لي قهوة، من فضلك.",
+    "سمعت أن البطل الحقيقي ينام باكراً.",
 ]
 
 
@@ -2246,6 +2299,11 @@ async def cmds_command(interaction: discord.Interaction):
         inline=False,
     )
     embed_en.add_field(
+        name="/fries",
+        value="Sends a random fries (or potato) gif.",
+        inline=False,
+    )
+    embed_en.add_field(
         name="/npc",
         value="Turns someone into a fake RPG NPC card with their avatar, a random role, and a random Arabic dialogue line.",
         inline=False,
@@ -2348,6 +2406,11 @@ async def cmds_command(interaction: discord.Interaction):
     embed_ar.add_field(
         name="/dino",
         value="يرسل صورة متحركة عشوائية لديناصور (أحياناً اثنان يتقاتلان).",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/fries",
+        value="يرسل صورة متحركة عشوائية للبطاطا المقلية (أو البطاطا العادية).",
         inline=False,
     )
     embed_ar.add_field(
