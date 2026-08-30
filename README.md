@@ -111,6 +111,9 @@ Whenever the user with ID `764457716110327809` is @mentioned by anyone in a mess
 
 **Setup:** the audio clip is bundled at `assets/dev_voice_clip.ogg` — already converted to match Discord's exact spec (mono, 48kHz, Opus) with a real waveform preview pre-computed from the actual audio (not fake/random data). Nothing to configure; just make sure that file is uploaded to your repo alongside the code. To change the clip or the target user, edit `VOICE_MENTION_TARGET_USER_ID` and `VOICE_CLIP_PATH` near the top of `flag_bot.py` — note that swapping the audio file also means recomputing `VOICE_CLIP_DURATION_SECS` and `VOICE_CLIP_WAVEFORM_B64` to match (ask if you want a new clip converted).
 
+## Easter egg: voice message when the bot is mentioned
+Whenever the bot itself is explicitly @mentioned (e.g. typing `@Bonbon`, not just replying to one of its messages), it responds with a different voice message — same mechanism as above, just a separate clip and separate trigger. Bundled at `assets/bot_mention_voice_clip.ogg`, already converted and with a real waveform pre-computed the same way. Uses `BOT_MENTION_VOICE_CLIP_PATH`/`_DURATION_SECS`/`_WAVEFORM_B64` near the top of `flag_bot.py`.
+
 ## Currency & Gambling
 Everyone starts with **100 coins** (🪙), tracked in the same `scores.json` file as wins/streaks. New users get the starting balance the first time they check their balance or gamble.
 

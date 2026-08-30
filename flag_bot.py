@@ -63,6 +63,11 @@ VOICE_CLIP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asse
 VOICE_CLIP_DURATION_SECS = 2.491042
 VOICE_CLIP_WAVEFORM_B64 = "AAAAAgUHCQsTCgoLDxolRFGLxbTCwb7CwaWzpKKenKynnaKgnqeco56jnZ1/YkMOCAoHBgUGBlaNipqpt7azrraYlJmYlJuZi42KhIaHf3+GfYB+fn92dn2BgouQhYGmj5CRqpCmpKGepJ+SjXtBLCAeHB8dHyAhJSAgIB8fHiIiIBZVY5ORlZ+enaKYjH9uZGBiYDQsHRAMCw0NDQ8RHSMrMDAvLi4wLy05NS0pLzQtLjAuLCkwKicmHyQlHx0eIB8bGxwXGxcZFRQTFBUTExITERARDxAQFA8NDQwNDA4LCAsLCAkKCQcIBgkJBgcJCAgGBQYEBwgIBwYEBwoHBA=="
 
+# Easter egg: explicitly @mentioning the bot itself posts a different voice clip.
+BOT_MENTION_VOICE_CLIP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "bot_mention_voice_clip.ogg")
+BOT_MENTION_VOICE_CLIP_DURATION_SECS = 7.190188
+BOT_MENTION_VOICE_CLIP_WAVEFORM_B64 = "AAAFGhYaGBYrLCEhHxASFA4PDQwhLBsdGB1EbnM2MFJkYko4RWxjWjIVIWuLhYhuZ0Vja2ZgeHxsdWNea1xUTD87OTo0Ih8eFxgXEA0nJUJbX19hW1U5JVNOSk5QUVZWWlVVUFtVYF5NUUwmMxcMEiwhFxITFzuYhH94kWh9dW9Rcn94eHZ8bHWMZ29cdWdgZkg0LRwMCwooFyYqOFBshGxbamlbcXFxb3tkYV9eWVZeR0RFPUA0KCIWDxsVGBQWKjAsX01iXmFnX11fb3JxcHxfWl5lTUZVSEM4NClAKCYYHxgaFxAVITZcZnNpXV57bGhsYGmJWGVjUl5SXktHAg=="
+
 # Optional: your server's ID, for instant slash-command sync to that specific
 # server instead of waiting up to ~1hr for a global sync to propagate everywhere.
 # Right-click your server icon in Discord (with Developer Mode on) → Copy Server ID.
@@ -2219,15 +2224,15 @@ async def handle_dot_reply_easter_egg(message: discord.Message):
             pass
 
 
-async def send_voice_message(channel_id: int):
+async def send_voice_message(channel_id: int, clip_path: str, duration_secs: float, waveform_b64: str):
     """Posts a real voice message (the blue waveform bubble) via a raw API call,
     since discord.py's high-level send() doesn't yet support the required
     flags/waveform/duration fields for this message type."""
-    if not os.path.exists(VOICE_CLIP_PATH):
-        print(f"Voice clip not found at {VOICE_CLIP_PATH}, skipping voice message.")
+    if not os.path.exists(clip_path):
+        print(f"Voice clip not found at {clip_path}, skipping voice message.")
         return
 
-    with open(VOICE_CLIP_PATH, "rb") as f:
+    with open(clip_path, "rb") as f:
         audio_bytes = f.read()
 
     url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
@@ -2237,8 +2242,8 @@ async def send_voice_message(channel_id: int):
         "attachments": [{
             "id": "0",
             "filename": "voice-message.ogg",
-            "duration_secs": VOICE_CLIP_DURATION_SECS,
-            "waveform": VOICE_CLIP_WAVEFORM_B64,
+            "duration_secs": duration_secs,
+            "waveform": waveform_b64,
         }],
     }
 
@@ -2260,7 +2265,15 @@ async def handle_voice_mention_easter_egg(message: discord.Message):
     """If VOICE_MENTION_TARGET_USER_ID is explicitly @mentioned (not just
     replied to with the ping toggle on), post the configured voice clip."""
     if VOICE_MENTION_PATTERN.search(message.content):
-        await send_voice_message(message.channel.id)
+        await send_voice_message(message.channel.id, VOICE_CLIP_PATH, VOICE_CLIP_DURATION_SECS, VOICE_CLIP_WAVEFORM_B64)
+
+
+async def handle_bot_mention_voice_easter_egg(message: discord.Message):
+    """If the bot itself is explicitly @mentioned (not replied to), post the
+    configured voice clip."""
+    bot_mention_pattern = re.compile(rf"<@!?{bot.user.id}>")
+    if bot_mention_pattern.search(message.content):
+        await send_voice_message(message.channel.id, BOT_MENTION_VOICE_CLIP_PATH, BOT_MENTION_VOICE_CLIP_DURATION_SECS, BOT_MENTION_VOICE_CLIP_WAVEFORM_B64)
 
 
 @bot.event
@@ -2270,6 +2283,7 @@ async def on_message(message: discord.Message):
 
     await handle_dot_reply_easter_egg(message)
     await handle_voice_mention_easter_egg(message)
+    await handle_bot_mention_voice_easter_egg(message)
 
     channel_id = message.channel.id
     country = active_rounds.get(channel_id)
