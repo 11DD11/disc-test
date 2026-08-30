@@ -1,2 +1,2 @@
 [phases.setup]
-aptPkgs = ["ffmpeg", "libopus0"]
+aptPkgs = ["libfribidi0"]

@@ -1993,6 +1993,138 @@ async def cheatcoins_command(interaction: discord.Interaction, code: str, user: 
     )
 
 
+# ----------------------------------------------------------------------
+# NPC CARD
+# ----------------------------------------------------------------------
+# Generates a fake "RPG NPC encounter" card using the target's real avatar,
+# a random made-up role, a random Arabic dialogue line, and stat bars that
+# are all suspiciously identical (the joke).
+#
+# Arabic text note: proper Arabic requires letter-joining (shaping) and
+# right-to-left ordering — Pillow can't do this on its own, but its bundled
+# "raqm" text-layout engine handles both automatically as long as libfribidi
+# is present on the host at runtime (see nixpacks.toml, which installs it).
+
+NPC_ROLES = [
+    "Village Elder", "Wandering Merchant", "Tavern Keeper", "Random Guard #47",
+    "Suspicious Blacksmith", "Quest Giver #12", "Retired Adventurer", "Potion Seller",
+]
+
+NPC_LINES_AR = [
+    "هل تريد شراء بضاعتي؟",
+    "الطريق إلى القرية محفوف بالمخاطر.",
+    "لا أملك مهمات لك اليوم.",
+    "استمع، هذا مهم جداً!",
+    "سمعت شائعات عن كنز مخفي بالقرب من هنا.",
+    "عد لاحقاً، أنا مشغول الآن.",
+    "هذه الأرض لم تعد آمنة كما كانت.",
+    "أتبحث عن مغامرة؟ لدي عمل لك.",
+]
+
+
+def _render_npc_card(avatar_img: Image.Image, username: str, role: str, dialogue_ar: str, stat_value: int) -> discord.File:
+    W, H = 420, 560
+    ss = 2
+    ss_img = Image.new("RGB", (W*ss, H*ss))
+    ss_img.paste(_radial_gradient((W*ss, H*ss), (45, 35, 60), (15, 10, 20)), (0, 0))
+    draw = ImageDraw.Draw(ss_img)
+
+    draw.rounded_rectangle([8*ss, 8*ss, (W-8)*ss, (H-8)*ss], radius=24*ss, outline=(180, 150, 220), width=6*ss)
+    draw.rounded_rectangle([16*ss, 16*ss, (W-16)*ss, (H-16)*ss], radius=18*ss, outline=(120, 100, 150), width=2*ss)
+
+    draw.text((W*ss/2, 40*ss), "NPC ENCOUNTER", font=_casino_font(True, 28*ss), fill=(200, 170, 240), anchor="mm")
+
+    avatar_size = 140 * ss
+    avatar_resized = avatar_img.resize((avatar_size, avatar_size)).convert("RGB")
+    mask = Image.new("L", (avatar_size, avatar_size), 0)
+    ImageDraw.Draw(mask).ellipse([0, 0, avatar_size-1, avatar_size-1], fill=255)
+    ax, ay = W*ss/2 - avatar_size/2, 65*ss
+    _drop_shadow(ss_img, [ax, ay, ax+avatar_size, ay+avatar_size], radius=avatar_size//2, blur=8*ss, offset=(0, 4*ss))
+    ss_img.paste(avatar_resized, (int(ax), int(ay)), mask)
+    draw.ellipse([ax, ay, ax+avatar_size, ay+avatar_size], outline=(200, 170, 240), width=4*ss)
+
+    name_y = ay + avatar_size + 25*ss
+    draw.text((W*ss/2, name_y), username, font=_casino_font(True, 24*ss), fill=(255, 255, 255), anchor="mm")
+    draw.text((W*ss/2, name_y + 26*ss), f'"{role}"', font=_casino_font(False, 16*ss), fill=(190, 170, 210), anchor="mm")
+
+    box_top = name_y + 55*ss
+    box_bottom = box_top + 110*ss
+    _drop_shadow(ss_img, [30*ss, box_top, (W-30)*ss, box_bottom], radius=14*ss, blur=6*ss, offset=(0, 3*ss))
+    draw.rounded_rectangle([30*ss, box_top, (W-30)*ss, box_bottom], radius=14*ss, fill=(250, 248, 240), outline=(120, 100, 150), width=3*ss)
+    draw.polygon(
+        [(W*ss/2-14*ss, box_top), (W*ss/2+14*ss, box_top), (W*ss/2, box_top-16*ss)],
+        fill=(250, 248, 240), outline=(120, 100, 150),
+    )
+
+    f_dialogue = _casino_font(False, 22*ss)
+    max_width = W*ss - 80*ss
+    words = dialogue_ar.split(" ")
+    lines, current = [], ""
+    for word in words:
+        test = (current + " " + word).strip()
+        bbox = draw.textbbox((0, 0), test, font=f_dialogue)
+        if bbox[2]-bbox[0] > max_width and current:
+            lines.append(current)
+            current = word
+        else:
+            current = test
+    if current:
+        lines.append(current)
+
+    line_height = 32 * ss
+    total_h = len(lines) * line_height
+    start_y = (box_top+box_bottom)/2 - total_h/2 + line_height/2
+    for i, line in enumerate(lines):
+        draw.text((W*ss/2, start_y + i*line_height), line, font=f_dialogue, fill=(30, 20, 40), anchor="mm")
+
+    stats = ["STR", "INT", "LUCK", "RIZZ"]
+    bar_top = box_bottom + 30*ss
+    bar_h = 22 * ss
+    for i, stat in enumerate(stats):
+        y = bar_top + i*(bar_h + 14*ss)
+        draw.text((40*ss, y+bar_h/2), stat, font=_casino_font(True, 14*ss), fill=(220, 210, 230), anchor="lm")
+        bx0, bx1 = 40*ss + 70*ss, W*ss - 40*ss
+        draw.rounded_rectangle([bx0, y, bx1, y+bar_h], radius=6*ss, fill=(60, 45, 70), outline=(120, 100, 150), width=2*ss)
+        fill_w = (bx1-bx0) * (stat_value/100)
+        draw.rounded_rectangle([bx0, y, bx0+fill_w, y+bar_h], radius=6*ss, fill=(200, 170, 240))
+        draw.text(((bx0+bx1)/2, y+bar_h/2), f"{stat_value}", font=_casino_font(False, 13*ss), fill=(255, 255, 255), anchor="mm")
+
+    footer_y = bar_top + len(stats)*(bar_h + 14*ss) + 15*ss
+    draw.text((W*ss/2, footer_y), "(all stats suspiciously identical)", font=_casino_font(False, 13*ss), fill=(150, 140, 160), anchor="mm")
+
+    final = ss_img.resize((W, H), Image.LANCZOS)
+    buffer = io.BytesIO()
+    final.save(buffer, format="PNG")
+    buffer.seek(0)
+    return discord.File(fp=buffer, filename="npc.png")
+
+
+@bot.tree.command(name="npc", description="Turn someone into a fake RPG NPC with a random dialogue line.")
+@app_commands.describe(user="Who to turn into an NPC (optional, defaults to yourself)")
+async def npc_command(interaction: discord.Interaction, user: discord.Member = None):
+    target = user or interaction.user
+    await interaction.response.defer()
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(str(target.display_avatar.replace(size=256, format="png").url)) as resp:
+                if resp.status != 200:
+                    await interaction.followup.send("Couldn't fetch that avatar, try again.")
+                    return
+                avatar_bytes = await resp.read()
+    except aiohttp.ClientError:
+        await interaction.followup.send("Couldn't fetch that avatar, try again.")
+        return
+
+    avatar_img = Image.open(io.BytesIO(avatar_bytes))
+    role = random.choice(NPC_ROLES)
+    dialogue = random.choice(NPC_LINES_AR)
+    stat_value = random.randint(1, 99)  # same value used for every stat bar — that's the joke
+
+    image_file = _render_npc_card(avatar_img, target.display_name, role, dialogue, stat_value)
+    await interaction.followup.send(file=image_file)
+
+
 @bot.tree.command(name="cmds", description="Show all available commands.")
 async def cmds_command(interaction: discord.Interaction):
     embed_en = discord.Embed(
@@ -2042,6 +2174,11 @@ async def cmds_command(interaction: discord.Interaction):
     embed_en.add_field(
         name="/dino",
         value="Sends a random dinosaur gif (sometimes two of them fighting).",
+        inline=False,
+    )
+    embed_en.add_field(
+        name="/npc",
+        value="Turns someone into a fake RPG NPC card with their avatar, a random role, and a random Arabic dialogue line.",
         inline=False,
     )
     embed_en.add_field(
@@ -2142,6 +2279,11 @@ async def cmds_command(interaction: discord.Interaction):
     embed_ar.add_field(
         name="/dino",
         value="يرسل صورة متحركة عشوائية لديناصور (أحياناً اثنان يتقاتلان).",
+        inline=False,
+    )
+    embed_ar.add_field(
+        name="/npc",
+        value="يحوّل شخصاً إلى بطاقة NPC وهمية بصورته الشخصية، دور عشوائي، وجملة حوار عشوائية بالعربية.",
         inline=False,
     )
     embed_ar.add_field(

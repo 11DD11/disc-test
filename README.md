@@ -51,6 +51,7 @@ message and the bot announces the winner.
 - `/dailychallenge` — one shared flag per day, everyone gets exactly one guess (right or wrong), resets at midnight server time. Whichever channel starts it first hosts it for the day.
 - `/osaka` — sends a random gif of Osaka (Ayumu Kasuga, from Azumanga Daioh). Requires a free Giphy API key (see below).
 - `/dino` — sends a random dinosaur gif, occasionally two of them fighting. Same Giphy setup as `/osaka`.
+- `/npc @user` — turns someone into a fake RPG "NPC encounter" card: their real avatar, a random made-up role (Village Elder, Suspicious Blacksmith, etc.), a random dialogue line in Arabic, and stat bars that are all suspiciously set to the exact same number (that's the joke). Defaults to yourself if no user is given.
 - `/ask <question>` — currently a placeholder; replies "its under development still" regardless of what's asked.
 - `/quote` — sends a random short anime or video game quote from a curated list.
 - `/tictactoe @user` — challenges another member to Tic-Tac-Toe with a clickable 3x3 button grid. Only the two players can click; the game times out after 5 minutes of inactivity.
@@ -130,6 +131,9 @@ All three games render as actual generated images — a dark green felt backgrou
 **On the odds:** these were simulated (300k+ trials) before shipping to keep the "house" from bleeding money over time — the original scratch card math actually let players win more than they spent on average (a real bug, caught and fixed before release). If you want to adjust payouts or odds later, everything lives in the `SLOT_SYMBOLS` and `SCRATCH_SYMBOLS` lists in the gambling section of `flag_bot.py` — just re-simulate before changing them live, since small multiplier tweaks can swing the payout rate a lot.
 
 **On the visuals:** all icon drawing and image rendering happens in Python using Pillow (already a dependency from the chess feature) — no extra setup needed beyond the font files already bundled in `assets/` for chess. This adds `assets/DejaVuSans-Bold.ttf` as an additional bundled font (used for the bold titles/banners on the casino graphics) — make sure that file is uploaded to your repo's `assets` folder alongside the others.
+
+## Technical note: Arabic text rendering in /npc
+Proper Arabic requires two things a basic image library doesn't do on its own: shaping (connecting letters into their correct contextual forms) and right-to-left ordering. Pillow can actually handle both automatically through a bundled text-layout engine called "raqm" — but that engine needs a system library called `libfribidi` present at runtime to do the right-to-left part reliably. The included `nixpacks.toml` installs this automatically on Railway. If `/npc`'s Arabic text ever looks reversed or the letters appear disconnected (each looking like an isolated block instead of joined cursive script), that library is likely missing — make sure `nixpacks.toml` is uploaded to your repo alongside the code.
 
 ## Removed features
 Voice/music commands (`/play`, `/vskip`, `/stop`, `/queue`, `/nowplaying`, `/join`, `/lofi`, `/panel`) have been removed, along with their dependencies (`yt-dlp`, `PyNaCl`, `davey`) and the `nixpacks.toml` file that installed `ffmpeg`/`libopus0` for them. If you want voice features back later, this is recoverable — just ask.
