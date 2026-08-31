@@ -2116,8 +2116,11 @@ def _prepare_arabic_text(text: str) -> str:
 NPC_ROLES = [
     "Village Elder", "Wandering Merchant", "Tavern Keeper", "Random Guard #47",
     "Suspicious Blacksmith", "Quest Giver #12", "Retired Adventurer", "Potion Seller",
+    "Mysterious Stranger", "Chicken Farmer", "Bridge Troll (Off Duty)", "Local Gossip",
+    "Failed Wizard", "Part-Time Dragon Slayer", "Confused Skeleton", "Tax Collector",
 ]
 
+# A big pool of silly, clean (no profanity), absurdist "NPC dialogue" lines.
 NPC_LINES_AR = [
     "أبيع البطاطا بسعر الذهب اليوم.",
     "لماذا تنظر إلي هكذا؟ اذهب اضغط على شيء آخر.",
@@ -2131,44 +2134,98 @@ NPC_LINES_AR = [
     "توقف عن الضغط، أنا أحاول أن آخذ قيلولة.",
     "لدي مهمة لك: أحضر لي قهوة، من فضلك.",
     "سمعت أن البطل الحقيقي ينام باكراً.",
+    "دجاجتي تتكلم أفضل مني، اسألها.",
+    "أنا حارس هذا الجسر، لكنني أخاف من المرتفعات.",
+    "كل ما أملكه هو هذا القميص وبعض الأحلام.",
+    "التنين في الكهف مجرد قطة كبيرة، صدقني.",
+    "أبحث عن وظيفة أفضل، هل تعرف أحداً؟",
+    "لو كنت بطلاً حقيقياً لكنت اشتريت بيتاً.",
+    "أعيد نفس الجملة كل يوم منذ سنوات، مساعدة!",
+    "هل جربت إطفاءه وإعادة تشغيله؟",
+    "لدي قوة سحرية: أضيع دائماً الطريق.",
+    "الملك ينام كثيراً، لهذا المملكة فوضى.",
+    "أنا لست وحشاً، أنا فقط لم أستحم اليوم.",
+    "اشتريت هذا الدرع من سوق مستعمل، رخيص جداً.",
+    "أعرف كل شيء عن القرية إلا أين أضع مفاتيحي.",
+    "صديقي الفارس اختفى، ربما ذهب ليشتري خبزاً.",
+    "أحلم بأن أصبح تنيناً يوماً ما.",
+    "أرض المعركة هادئة اليوم، ربما لأن الجميع نائم.",
 ]
 
 
 def _render_npc_card(avatar_img: Image.Image, username: str, role: str, dialogue_ar: str, stat_value: int) -> discord.File:
-    W, H = 420, 560
-    ss = 2
+    W, H = 440, 720
+    ss = CASINO_SUPERSAMPLE
     ss_img = Image.new("RGB", (W*ss, H*ss))
-    ss_img.paste(_radial_gradient((W*ss, H*ss), (45, 35, 60), (15, 10, 20)), (0, 0))
+    ss_img.paste(_radial_gradient((W*ss, H*ss), (55, 40, 75), (12, 8, 18)), (0, 0))
     draw = ImageDraw.Draw(ss_img)
 
-    draw.rounded_rectangle([8*ss, 8*ss, (W-8)*ss, (H-8)*ss], radius=24*ss, outline=(180, 150, 220), width=6*ss)
-    draw.rounded_rectangle([16*ss, 16*ss, (W-16)*ss, (H-16)*ss], radius=18*ss, outline=(120, 100, 150), width=2*ss)
+    GOLD = (222, 190, 110)
+    PURPLE_LIGHT = (200, 170, 240)
+    PURPLE_DARK = (90, 65, 120)
 
-    draw.text((W*ss/2, 40*ss), "NPC ENCOUNTER", font=_casino_font(True, 28*ss), fill=(200, 170, 240), anchor="mm")
+    # double border: outer gold, inner thin purple, plus small diamond flourishes at corners
+    draw.rounded_rectangle([8*ss, 8*ss, (W-8)*ss, (H-8)*ss], radius=26*ss, outline=GOLD, width=6*ss)
+    draw.rounded_rectangle([17*ss, 17*ss, (W-17)*ss, (H-17)*ss], radius=20*ss, outline=PURPLE_DARK, width=2*ss)
+    for cx, cy in [(24*ss, 24*ss), (W*ss-24*ss, 24*ss), (24*ss, H*ss-24*ss), (W*ss-24*ss, H*ss-24*ss)]:
+        d = 7*ss
+        draw.polygon([(cx, cy-d), (cx+d, cy), (cx, cy+d), (cx-d, cy)], fill=GOLD)
 
-    avatar_size = 140 * ss
-    avatar_resized = avatar_img.resize((avatar_size, avatar_size)).convert("RGB")
-    mask = Image.new("L", (avatar_size, avatar_size), 0)
-    ImageDraw.Draw(mask).ellipse([0, 0, avatar_size-1, avatar_size-1], fill=255)
-    ax, ay = W*ss/2 - avatar_size/2, 65*ss
-    _drop_shadow(ss_img, [ax, ay, ax+avatar_size, ay+avatar_size], radius=avatar_size//2, blur=8*ss, offset=(0, 4*ss))
+    f_title = _casino_font(True, 30*ss)
+    draw.text((W*ss/2, 4*ss+42*ss), "NPC ENCOUNTER", font=f_title, fill=(255, 240, 190), anchor="mm")
+    draw.text((W*ss/2, 42*ss), "NPC ENCOUNTER", font=f_title, fill=GOLD, anchor="mm")
+    draw.line([(60*ss, 62*ss), (W*ss-60*ss, 62*ss)], fill=PURPLE_DARK, width=2*ss)
+
+    avatar_size = 150 * ss
+    ax, ay = W*ss/2 - avatar_size/2, 80*ss
+    for ring_r, ring_op in [(avatar_size/2+16*ss, 60), (avatar_size/2+8*ss, 110)]:
+        glow = Image.new("RGBA", ss_img.size, (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow)
+        gd.ellipse(
+            [W*ss/2-ring_r, ay+avatar_size/2-ring_r, W*ss/2+ring_r, ay+avatar_size/2+ring_r],
+            fill=(200, 170, 240, ring_op),
+        )
+        glow = glow.filter(ImageFilter.GaussianBlur(10*ss))
+        ss_img.paste(Image.alpha_composite(ss_img.convert("RGBA"), glow).convert("RGB"), (0, 0))
+        draw = ImageDraw.Draw(ss_img)
+
+    _drop_shadow(ss_img, [ax, ay, ax+avatar_size, ay+avatar_size], radius=int(avatar_size/2), blur=8*ss, offset=(0, 5*ss))
+    avatar_resized = avatar_img.resize((int(avatar_size), int(avatar_size))).convert("RGB")
+    mask = Image.new("L", (int(avatar_size), int(avatar_size)), 0)
+    ImageDraw.Draw(mask).ellipse([0, 0, int(avatar_size)-1, int(avatar_size)-1], fill=255)
     ss_img.paste(avatar_resized, (int(ax), int(ay)), mask)
-    draw.ellipse([ax, ay, ax+avatar_size, ay+avatar_size], outline=(200, 170, 240), width=4*ss)
+    draw = ImageDraw.Draw(ss_img)
+    draw.ellipse([ax, ay, ax+avatar_size, ay+avatar_size], outline=GOLD, width=5*ss)
+    draw.ellipse([ax+6*ss, ay+6*ss, ax+avatar_size-6*ss, ay+avatar_size-6*ss], outline=PURPLE_LIGHT, width=2*ss)
 
-    name_y = ay + avatar_size + 25*ss
-    draw.text((W*ss/2, name_y), username, font=_casino_font(True, 24*ss), fill=(255, 255, 255), anchor="mm")
-    draw.text((W*ss/2, name_y + 26*ss), f'"{role}"', font=_casino_font(False, 16*ss), fill=(190, 170, 210), anchor="mm")
+    name_y = ay + avatar_size + 32*ss
+    draw.text((W*ss/2+2*ss, name_y+2*ss), username, font=_casino_font(True, 26*ss), fill=(0, 0, 0), anchor="mm")
+    draw.text((W*ss/2, name_y), username, font=_casino_font(True, 26*ss), fill=(255, 255, 255), anchor="mm")
+    draw.text((W*ss/2, name_y+30*ss), f'"{role}"', font=_casino_font(False, 17*ss), fill=PURPLE_LIGHT, anchor="mm")
 
-    box_top = name_y + 55*ss
-    box_bottom = box_top + 110*ss
-    _drop_shadow(ss_img, [30*ss, box_top, (W-30)*ss, box_bottom], radius=14*ss, blur=6*ss, offset=(0, 3*ss))
-    draw.rounded_rectangle([30*ss, box_top, (W-30)*ss, box_bottom], radius=14*ss, fill=(250, 248, 240), outline=(120, 100, 150), width=3*ss)
+    box_top = name_y + 60*ss
+    box_bottom = box_top + 130*ss
+    _drop_shadow(ss_img, [28*ss, box_top, (W-28)*ss, box_bottom], radius=16*ss, blur=8*ss, offset=(0, 4*ss))
+    parchment_w, parchment_h = int(W*ss - 56*ss), int(box_bottom - box_top)
+    parchment = Image.new("RGB", (1, parchment_h))
+    ppx = parchment.load()
+    top_c, bottom_c = (255, 252, 244), (238, 230, 210)
+    for y in range(parchment_h):
+        t = y / max(1, parchment_h - 1)
+        ppx[0, y] = tuple(int(top_c[i] + (bottom_c[i]-top_c[i])*t) for i in range(3))
+    parchment = parchment.resize((parchment_w, parchment_h))
+    mask2 = Image.new("L", parchment.size, 0)
+    ImageDraw.Draw(mask2).rounded_rectangle([0, 0, parchment.width-1, parchment.height-1], radius=16*ss, fill=255)
+    ss_img.paste(parchment, (int(28*ss), int(box_top)), mask2)
+    draw = ImageDraw.Draw(ss_img)
+    draw.rounded_rectangle([28*ss, box_top, (W-28)*ss, box_bottom], radius=16*ss, outline=PURPLE_DARK, width=3*ss)
+    draw.rounded_rectangle([32*ss, box_top+4*ss, (W-32)*ss, box_bottom-4*ss], radius=13*ss, outline=GOLD, width=1*ss)
     draw.polygon(
-        [(W*ss/2-14*ss, box_top), (W*ss/2+14*ss, box_top), (W*ss/2, box_top-16*ss)],
-        fill=(250, 248, 240), outline=(120, 100, 150),
+        [(W*ss/2-16*ss, box_top), (W*ss/2+16*ss, box_top), (W*ss/2, box_top-18*ss)],
+        fill=(255, 252, 244), outline=PURPLE_DARK,
     )
 
-    f_dialogue = _casino_font(False, 22*ss)
+    f_dialogue = _casino_font(False, 23*ss)
     max_width = W*ss - 80*ss
     words = dialogue_ar.split(" ")
     lines, current = [], ""
@@ -2191,28 +2248,41 @@ def _render_npc_card(avatar_img: Image.Image, username: str, role: str, dialogue
     # scramble it a second time. BASIC layout works regardless of whether raqm
     # is even installed on the host, so this is safe either way.
     display_lines = [_prepare_arabic_text(line) for line in lines]
-    f_dialogue_basic = ImageFont.truetype(_CASINO_FONT_REGULAR_PATH, 22*ss, layout_engine=ImageFont.Layout.BASIC)
+    f_dialogue_basic = ImageFont.truetype(_CASINO_FONT_REGULAR_PATH, 23*ss, layout_engine=ImageFont.Layout.BASIC)
 
-    line_height = 32 * ss
+    line_height = 34 * ss
     total_h = len(display_lines) * line_height
     start_y = (box_top+box_bottom)/2 - total_h/2 + line_height/2
     for i, line in enumerate(display_lines):
-        draw.text((W*ss/2, start_y + i*line_height), line, font=f_dialogue_basic, fill=(30, 20, 40), anchor="mm")
+        draw.text((W*ss/2, start_y + i*line_height), line, font=f_dialogue_basic, fill=(45, 30, 20), anchor="mm")
 
     stats = ["STR", "INT", "LUCK", "RIZZ"]
-    bar_top = box_bottom + 30*ss
-    bar_h = 22 * ss
+    bar_top = box_bottom + 34*ss
+    bar_h = 24 * ss
     for i, stat in enumerate(stats):
-        y = bar_top + i*(bar_h + 14*ss)
-        draw.text((40*ss, y+bar_h/2), stat, font=_casino_font(True, 14*ss), fill=(220, 210, 230), anchor="lm")
-        bx0, bx1 = 40*ss + 70*ss, W*ss - 40*ss
-        draw.rounded_rectangle([bx0, y, bx1, y+bar_h], radius=6*ss, fill=(60, 45, 70), outline=(120, 100, 150), width=2*ss)
+        y = bar_top + i*(bar_h + 16*ss)
+        draw.text((38*ss, y+bar_h/2), stat, font=_casino_font(True, 15*ss), fill=(230, 220, 240), anchor="lm")
+        bx0, bx1 = 38*ss + 72*ss, W*ss - 38*ss
+        draw.rounded_rectangle([bx0, y, bx1, y+bar_h], radius=8*ss, fill=(45, 32, 58), outline=PURPLE_DARK, width=2*ss)
         fill_w = (bx1-bx0) * (stat_value/100)
-        draw.rounded_rectangle([bx0, y, bx0+fill_w, y+bar_h], radius=6*ss, fill=(200, 170, 240))
-        draw.text(((bx0+bx1)/2, y+bar_h/2), f"{stat_value}", font=_casino_font(False, 13*ss), fill=(255, 255, 255), anchor="mm")
+        if fill_w > 4*ss:
+            bar_h_int = int(bar_h)
+            bar_grad = Image.new("RGB", (1, bar_h_int))
+            bgpx = bar_grad.load()
+            top_g, bottom_g = (225, 195, 255), (165, 120, 215)
+            for y2 in range(bar_h_int):
+                t = y2 / max(1, bar_h_int - 1)
+                bgpx[0, y2] = tuple(int(top_g[i] + (bottom_g[i]-top_g[i])*t) for i in range(3))
+            bar_grad = bar_grad.resize((int(fill_w), bar_h_int))
+            bar_mask = Image.new("L", bar_grad.size, 0)
+            ImageDraw.Draw(bar_mask).rounded_rectangle([0, 0, bar_grad.width-1, bar_grad.height-1], radius=8*ss, fill=255)
+            ss_img.paste(bar_grad, (int(bx0), int(y)), bar_mask)
+            draw = ImageDraw.Draw(ss_img)
+            draw.rounded_rectangle([bx0+2*ss, y+2*ss, bx0+fill_w-2*ss, y+bar_h*0.42], radius=5*ss, fill=(255, 255, 255))
+        draw.text(((bx0+bx1)/2, y+bar_h/2), f"{stat_value}", font=_casino_font(True, 14*ss), fill=(255, 255, 255), anchor="mm")
 
-    footer_y = bar_top + len(stats)*(bar_h + 14*ss) + 15*ss
-    draw.text((W*ss/2, footer_y), "(all stats suspiciously identical)", font=_casino_font(False, 13*ss), fill=(150, 140, 160), anchor="mm")
+    footer_y = bar_top + len(stats)*(bar_h + 16*ss) + 18*ss
+    draw.text((W*ss/2, footer_y), "(suspiciously identical stats)", font=_casino_font(False, 13*ss), fill=(170, 155, 190), anchor="mm")
 
     final = ss_img.resize((W, H), Image.LANCZOS)
     buffer = io.BytesIO()
