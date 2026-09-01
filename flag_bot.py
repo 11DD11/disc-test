@@ -2205,86 +2205,195 @@ NPC_LINES_AR = [
 ]
 
 
-def _render_npc_card(avatar_img: Image.Image, username: str, role: str, dialogue_ar: str, stat_value: int) -> discord.File:
-    W, H = 440, 720
-    ss = CASINO_SUPERSAMPLE
-    ss_img = Image.new("RGB", (W*ss, H*ss))
-    ss_img.paste(_radial_gradient((W*ss, H*ss), (55, 40, 75), (12, 8, 18)), (0, 0))
-    draw = ImageDraw.Draw(ss_img)
+# Serif fonts for the elegant/glassy card style (Arabic dialogue still uses
+# the Sans font via _casino_font, since DejaVu Serif has no Arabic glyphs).
+_NPC_FONT_SERIF_BOLD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "DejaVuSerif-Bold.ttf")
+_NPC_FONT_SERIF_REGULAR_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "DejaVuSerif.ttf")
+_NPC_FONT_SERIF_ITALIC_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "DejaVuSerif-Italic.ttf")
 
-    GOLD = (222, 190, 110)
-    PURPLE_LIGHT = (200, 170, 240)
-    PURPLE_DARK = (90, 65, 120)
 
-    # double border: outer gold, inner thin purple, plus small diamond flourishes at corners
-    draw.rounded_rectangle([8*ss, 8*ss, (W-8)*ss, (H-8)*ss], radius=26*ss, outline=GOLD, width=6*ss)
-    draw.rounded_rectangle([17*ss, 17*ss, (W-17)*ss, (H-17)*ss], radius=20*ss, outline=PURPLE_DARK, width=2*ss)
-    for cx, cy in [(24*ss, 24*ss), (W*ss-24*ss, 24*ss), (24*ss, H*ss-24*ss), (W*ss-24*ss, H*ss-24*ss)]:
-        d = 7*ss
-        draw.polygon([(cx, cy-d), (cx+d, cy), (cx, cy+d), (cx-d, cy)], fill=GOLD)
+def _npc_vertical_gradient(size, top_color, bottom_color) -> Image.Image:
+    w, h = size
+    img = Image.new("RGB", (1, h))
+    px = img.load()
+    for y in range(h):
+        t = y / max(1, h - 1)
+        px[0, y] = tuple(int(top_color[i] + (bottom_color[i]-top_color[i])*t) for i in range(3))
+    return img.resize((w, h))
 
-    f_title = _casino_font(True, 30*ss)
-    draw.text((W*ss/2, 4*ss+42*ss), "NPC ENCOUNTER", font=f_title, fill=(255, 240, 190), anchor="mm")
-    draw.text((W*ss/2, 42*ss), "NPC ENCOUNTER", font=f_title, fill=GOLD, anchor="mm")
-    draw.line([(60*ss, 62*ss), (W*ss-60*ss, 62*ss)], fill=PURPLE_DARK, width=2*ss)
 
-    avatar_size = 150 * ss
-    ax, ay = W*ss/2 - avatar_size/2, 80*ss
-    for ring_r, ring_op in [(avatar_size/2+16*ss, 60), (avatar_size/2+8*ss, 110)]:
-        glow = Image.new("RGBA", ss_img.size, (0, 0, 0, 0))
-        gd = ImageDraw.Draw(glow)
-        gd.ellipse(
-            [W*ss/2-ring_r, ay+avatar_size/2-ring_r, W*ss/2+ring_r, ay+avatar_size/2+ring_r],
-            fill=(200, 170, 240, ring_op),
-        )
-        glow = glow.filter(ImageFilter.GaussianBlur(10*ss))
-        ss_img.paste(Image.alpha_composite(ss_img.convert("RGBA"), glow).convert("RGB"), (0, 0))
-        draw = ImageDraw.Draw(ss_img)
+def _npc_soft_glow(base_img: Image.Image, box, color, peak_opacity, blur):
+    """See the note in _render_npc_card: this draws the glow shape on a
+    grayscale mask (not RGBA) specifically to avoid dark-fringing artifacts
+    that blurring a transparent RGBA canvas directly would cause."""
+    mask = Image.new("L", base_img.size, 0)
+    ImageDraw.Draw(mask).ellipse(box, fill=peak_opacity)
+    mask = mask.filter(ImageFilter.GaussianBlur(blur))
+    color_layer = Image.new("RGB", base_img.size, color)
+    base_img.paste(color_layer, (0, 0), mask)
 
-    _drop_shadow(ss_img, [ax, ay, ax+avatar_size, ay+avatar_size], radius=int(avatar_size/2), blur=8*ss, offset=(0, 5*ss))
-    avatar_resized = avatar_img.resize((int(avatar_size), int(avatar_size))).convert("RGB")
-    mask = Image.new("L", (int(avatar_size), int(avatar_size)), 0)
-    ImageDraw.Draw(mask).ellipse([0, 0, int(avatar_size)-1, int(avatar_size)-1], fill=255)
-    ss_img.paste(avatar_resized, (int(ax), int(ay)), mask)
-    draw = ImageDraw.Draw(ss_img)
-    draw.ellipse([ax, ay, ax+avatar_size, ay+avatar_size], outline=GOLD, width=5*ss)
-    draw.ellipse([ax+6*ss, ay+6*ss, ax+avatar_size-6*ss, ay+avatar_size-6*ss], outline=PURPLE_LIGHT, width=2*ss)
 
-    name_y = ay + avatar_size + 32*ss
-    draw.text((W*ss/2+2*ss, name_y+2*ss), username, font=_casino_font(True, 26*ss), fill=(0, 0, 0), anchor="mm")
-    draw.text((W*ss/2, name_y), username, font=_casino_font(True, 26*ss), fill=(255, 255, 255), anchor="mm")
-    draw.text((W*ss/2, name_y+30*ss), f'"{role}"', font=_casino_font(False, 17*ss), fill=PURPLE_LIGHT, anchor="mm")
-
-    box_top = name_y + 60*ss
-    box_bottom = box_top + 130*ss
-    _drop_shadow(ss_img, [28*ss, box_top, (W-28)*ss, box_bottom], radius=16*ss, blur=8*ss, offset=(0, 4*ss))
-    parchment_w, parchment_h = int(W*ss - 56*ss), int(box_bottom - box_top)
-    parchment = Image.new("RGB", (1, parchment_h))
-    ppx = parchment.load()
-    top_c, bottom_c = (255, 252, 244), (238, 230, 210)
-    for y in range(parchment_h):
-        t = y / max(1, parchment_h - 1)
-        ppx[0, y] = tuple(int(top_c[i] + (bottom_c[i]-top_c[i])*t) for i in range(3))
-    parchment = parchment.resize((parchment_w, parchment_h))
-    mask2 = Image.new("L", parchment.size, 0)
-    ImageDraw.Draw(mask2).rounded_rectangle([0, 0, parchment.width-1, parchment.height-1], radius=16*ss, fill=255)
-    ss_img.paste(parchment, (int(28*ss), int(box_top)), mask2)
-    draw = ImageDraw.Draw(ss_img)
-    draw.rounded_rectangle([28*ss, box_top, (W-28)*ss, box_bottom], radius=16*ss, outline=PURPLE_DARK, width=3*ss)
-    draw.rounded_rectangle([32*ss, box_top+4*ss, (W-32)*ss, box_bottom-4*ss], radius=13*ss, outline=GOLD, width=1*ss)
-    draw.polygon(
-        [(W*ss/2-16*ss, box_top), (W*ss/2+16*ss, box_top), (W*ss/2, box_top-18*ss)],
-        fill=(255, 252, 244), outline=PURPLE_DARK,
+def _npc_soft_shadow_rect(base_img: Image.Image, box, radius, color, peak_opacity, blur, offset=(0, 0)):
+    mask = Image.new("L", base_img.size, 0)
+    x0, y0, x1, y1 = box
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [x0+offset[0], y0+offset[1], x1+offset[0], y1+offset[1]], radius=radius, fill=peak_opacity
     )
+    mask = mask.filter(ImageFilter.GaussianBlur(blur))
+    color_layer = Image.new("RGB", base_img.size, color)
+    base_img.paste(color_layer, (0, 0), mask)
 
-    f_dialogue = _casino_font(False, 23*ss)
+
+def _npc_draw_sparkle(draw, cx, cy, size, color):
+    draw.polygon([
+        (cx, cy-size), (cx+size*0.22, cy-size*0.22), (cx+size, cy), (cx+size*0.22, cy+size*0.22),
+        (cx, cy+size), (cx-size*0.22, cy+size*0.22), (cx-size, cy), (cx-size*0.22, cy-size*0.22),
+    ], fill=color)
+
+
+def _npc_draw_icon_badge(draw, cx, cy, r, icon_fn, bg_color, border_color, icon_color):
+    draw.ellipse([cx-r, cy-r, cx+r, cy+r], fill=bg_color, outline=border_color, width=2)
+    icon_fn(draw, cx, cy, r*0.55, icon_color)
+
+
+def _npc_icon_dumbbell(draw, cx, cy, r, color):
+    draw.ellipse([cx-r*0.9, cy-r*0.5, cx-r*0.5, cy+r*0.5], fill=color)
+    draw.ellipse([cx+r*0.5, cy-r*0.5, cx+r*0.9, cy+r*0.5], fill=color)
+    draw.rectangle([cx-r*0.6, cy-r*0.18, cx+r*0.6, cy+r*0.18], fill=color)
+
+
+def _npc_icon_book(draw, cx, cy, r, color):
+    draw.polygon([(cx, cy-r*0.55), (cx-r*0.85, cy-r*0.3), (cx-r*0.85, cy+r*0.5), (cx, cy+r*0.25)], fill=color)
+    draw.polygon([(cx, cy-r*0.55), (cx+r*0.85, cy-r*0.3), (cx+r*0.85, cy+r*0.5), (cx, cy+r*0.25)], fill=color)
+    draw.line([cx, cy-r*0.55, cx, cy+r*0.25], fill=(255, 255, 255), width=2)
+
+
+def _npc_icon_clover(draw, cx, cy, r, color):
+    off = r * 0.42
+    for dx, dy in [(-off, -off), (off, -off), (-off, off), (off, off)]:
+        draw.ellipse([cx+dx-r*0.42, cy+dy-r*0.42, cx+dx+r*0.42, cy+dy+r*0.42], fill=color)
+    draw.line([cx, cy+r*0.3, cx, cy+r*1.0], fill=color, width=3)
+
+
+def _npc_icon_heart(draw, cx, cy, r, color):
+    draw.pieslice([cx-r*0.9, cy-r*0.7, cx, cy+r*0.2], 180, 360, fill=color)
+    draw.pieslice([cx, cy-r*0.7, cx+r*0.9, cy+r*0.2], 180, 360, fill=color)
+    draw.polygon([(cx-r*0.85, cy-r*0.1), (cx+r*0.85, cy-r*0.1), (cx, cy+r*0.9)], fill=color)
+
+
+def _render_npc_card(avatar_img: Image.Image, username: str, role: str, dialogue_ar: str, stat_value: int) -> discord.File:
+    """Glassy/elegant NPC card: pastel gradient background, serif typography,
+    icon-labeled stat bars, and decorative sparkle/quote accents.
+
+    Glow/shadow note: blurring an RGBA shape drawn on a fully-transparent
+    canvas causes GaussianBlur to pull in black from the transparent
+    surroundings (they're still RGB=black underneath, just alpha=0), producing
+    dark fringing instead of a clean soft glow. The fix used throughout below
+    is to draw the shape on a single-channel grayscale (L) mask instead, blur
+    that mask (no color channels to fringe), then paste a flat color layer
+    through it — this is what _npc_soft_glow / _npc_soft_shadow_rect do.
+    """
+    ss = CASINO_SUPERSAMPLE
+    W, H = 460, 960  # generous height so nothing gets clipped
+    PURPLE = (140, 110, 190)
+    PURPLE_DARK = (90, 65, 145)
+    GOLD_MUTED = (170, 140, 90)
+    BG_LIGHT = (248, 245, 252)
+
+    ss_img = Image.new("RGB", (W*ss, H*ss), BG_LIGHT)
+    ss_img.paste(_npc_vertical_gradient((W*ss, H*ss), (250, 248, 253), (232, 224, 245)), (0, 0))
+    draw = ImageDraw.Draw(ss_img)
+
+    rnd = random.Random()
+    for _ in range(30):
+        sx, sy = rnd.uniform(20, W-20)*ss, rnd.uniform(20, H-20)*ss
+        s = rnd.uniform(2, 5)*ss
+        _npc_draw_sparkle(draw, sx, sy, s, (225, 215, 240))
+
+    _npc_soft_shadow_rect(ss_img, [10*ss, 10*ss, (W-10)*ss, (H-10)*ss], radius=30*ss, color=(180, 165, 210), peak_opacity=25, blur=16*ss)
+    draw = ImageDraw.Draw(ss_img)
+    draw.rounded_rectangle([10*ss, 10*ss, (W-10)*ss, (H-10)*ss], radius=30*ss, outline=(210, 195, 235), width=3*ss)
+
+    f_title = ImageFont.truetype(_NPC_FONT_SERIF_BOLD_PATH, 34*ss)
+    title = "NPC ENCOUNTER"
+    bbox = draw.textbbox((0, 0), title, font=f_title)
+    tw = bbox[2] - bbox[0]
+    draw.text((W*ss/2, 55*ss), title, font=f_title, fill=PURPLE, anchor="mm")
+    _npc_draw_sparkle(draw, W*ss/2 - tw/2 - 22*ss, 55*ss, 8*ss, PURPLE)
+    _npc_draw_sparkle(draw, W*ss/2 + tw/2 + 22*ss, 55*ss, 8*ss, PURPLE)
+    draw.line([(W*ss/2-30*ss, 78*ss), (W*ss/2+30*ss, 78*ss)], fill=(200, 185, 225), width=2*ss)
+    _npc_draw_sparkle(draw, W*ss/2, 78*ss, 5*ss, PURPLE_DARK)
+
+    avatar_size = 190 * ss
+    ax, ay = W*ss/2 - avatar_size/2, 105*ss
+    acx, acy = ax + avatar_size/2, ay + avatar_size/2
+    _npc_soft_glow(
+        ss_img,
+        [acx-avatar_size/2-20*ss, acy-avatar_size/2-20*ss, acx+avatar_size/2+20*ss, acy+avatar_size/2+20*ss],
+        (200, 180, 230), 45, 12*ss,
+    )
+    draw = ImageDraw.Draw(ss_img)
+
+    avatar_resized = avatar_img.resize((int(avatar_size), int(avatar_size))).convert("RGB")
+    amask = Image.new("L", (int(avatar_size), int(avatar_size)), 0)
+    ImageDraw.Draw(amask).ellipse([0, 0, int(avatar_size)-1, int(avatar_size)-1], fill=255)
+    ss_img.paste(avatar_resized, (int(ax), int(ay)), amask)
+    draw = ImageDraw.Draw(ss_img)
+    draw.ellipse([ax, ay, ax+avatar_size, ay+avatar_size], outline=(220, 200, 150), width=4*ss)
+    draw.ellipse([ax+5*ss, ay+5*ss, ax+avatar_size-5*ss, ay+avatar_size-5*ss], outline=(255, 255, 255), width=2*ss)
+
+    for angle in [0, 90, 180, 270]:
+        rad = math.radians(angle - 90)
+        r_pos = avatar_size/2 + 8*ss
+        sx = W*ss/2 + r_pos * math.cos(rad)
+        sy = acy + r_pos * math.sin(rad)
+        _npc_draw_sparkle(draw, sx, sy, 9*ss, PURPLE)
+
+    name_y = ay + avatar_size + 45*ss
+    f_name = ImageFont.truetype(_NPC_FONT_SERIF_BOLD_PATH, 36*ss)
+    nbbox = draw.textbbox((0, 0), username.upper(), font=f_name)
+    nw = nbbox[2] - nbbox[0]
+    draw.text((W*ss/2, name_y), username.upper(), font=f_name, fill=PURPLE, anchor="mm")
+    _npc_draw_sparkle(draw, W*ss/2-nw/2-20*ss, name_y, 7*ss, PURPLE)
+    _npc_draw_sparkle(draw, W*ss/2+nw/2+20*ss, name_y, 7*ss, PURPLE)
+
+    role_y = name_y + 38*ss
+    f_role = ImageFont.truetype(_NPC_FONT_SERIF_ITALIC_PATH, 19*ss)
+    role_text = f'"{role}"'
+    rbbox = draw.textbbox((0, 0), role_text, font=f_role)
+    rw = rbbox[2] - rbbox[0]
+    draw.text((W*ss/2, role_y), role_text, font=f_role, fill=GOLD_MUTED, anchor="mm")
+    draw.line([(W*ss/2-rw/2-18*ss, role_y), (W*ss/2-rw/2-6*ss, role_y)], fill=GOLD_MUTED, width=2*ss)
+    draw.line([(W*ss/2+rw/2+6*ss, role_y), (W*ss/2+rw/2+18*ss, role_y)], fill=GOLD_MUTED, width=2*ss)
+
+    box_top = role_y + 40*ss
+    box_bottom = box_top + 130*ss
+    _npc_soft_shadow_rect(ss_img, [30*ss, box_top, (W-30)*ss, box_bottom], radius=22*ss, color=(160, 145, 190), peak_opacity=30, blur=10*ss, offset=(0, 6*ss))
+    draw = ImageDraw.Draw(ss_img)
+
+    glass_w, glass_h = int(W*ss-60*ss), int(box_bottom-box_top)
+    glass_overlay = Image.new("RGBA", ss_img.size, (0, 0, 0, 0))
+    small_glass = Image.new("RGBA", (glass_w, glass_h), (255, 255, 255, 190))
+    small_mask = Image.new("L", (glass_w, glass_h), 0)
+    ImageDraw.Draw(small_mask).rounded_rectangle([0, 0, glass_w-1, glass_h-1], radius=22*ss, fill=255)
+    small_glass.putalpha(small_mask)
+    glass_overlay.paste(small_glass, (int(30*ss), int(box_top)), small_glass)
+    ss_img = Image.alpha_composite(ss_img.convert("RGBA"), glass_overlay).convert("RGB")
+    draw = ImageDraw.Draw(ss_img)
+    draw.rounded_rectangle([30*ss, box_top, (W-30)*ss, box_bottom], radius=22*ss, outline=(215, 200, 235), width=2*ss)
+
+    f_bigquote = ImageFont.truetype(_NPC_FONT_SERIF_BOLD_PATH, 60*ss)
+    draw.text((55*ss, box_top+10*ss), '"', font=f_bigquote, fill=(200, 180, 225), anchor="la")
+    draw.text((W*ss-55*ss, box_bottom-55*ss), '"', font=f_bigquote, fill=(200, 180, 225), anchor="la")
+
     max_width = W*ss - 80*ss
+    f_measure = _casino_font(False, 23*ss)
     words = dialogue_ar.split(" ")
     lines, current = [], ""
     for word in words:
         test = (current + " " + word).strip()
-        bbox = draw.textbbox((0, 0), test, font=f_dialogue)
-        if bbox[2]-bbox[0] > max_width and current:
+        wbbox = draw.textbbox((0, 0), test, font=f_measure)
+        if wbbox[2]-wbbox[0] > max_width and current:
             lines.append(current)
             current = word
         else:
@@ -2292,49 +2401,56 @@ def _render_npc_card(avatar_img: Image.Image, username: str, role: str, dialogue
     if current:
         lines.append(current)
 
-    # Shape + reorder each line ourselves (see _prepare_arabic_text) rather than
-    # relying on Pillow's raqm engine, which needs a system library that wasn't
-    # reliably available at runtime. Since the text is already shaped/reordered,
-    # it must be drawn with Pillow's BASIC layout engine (no further processing)
-    # instead of the default — feeding pre-shaped text through raqm again would
-    # scramble it a second time. BASIC layout works regardless of whether raqm
-    # is even installed on the host, so this is safe either way.
+    # Shape + reorder each line ourselves (pure-Python, no system-library
+    # dependency — see _prepare_arabic_text), then draw with Pillow's BASIC
+    # layout engine so the already-shaped text isn't processed a second time.
     display_lines = [_prepare_arabic_text(line) for line in lines]
-    f_dialogue_basic = ImageFont.truetype(_CASINO_FONT_REGULAR_PATH, 23*ss, layout_engine=ImageFont.Layout.BASIC)
+    f_dialogue_basic = ImageFont.truetype(_CASINO_FONT_REGULAR_PATH, 24*ss, layout_engine=ImageFont.Layout.BASIC)
 
-    line_height = 34 * ss
+    line_height = 36 * ss
     total_h = len(display_lines) * line_height
     start_y = (box_top+box_bottom)/2 - total_h/2 + line_height/2
     for i, line in enumerate(display_lines):
-        draw.text((W*ss/2, start_y + i*line_height), line, font=f_dialogue_basic, fill=(45, 30, 20), anchor="mm")
+        draw.text((W*ss/2, start_y + i*line_height), line, font=f_dialogue_basic, fill=(60, 45, 80), anchor="mm")
 
-    stats = ["STR", "INT", "LUCK", "RIZZ"]
-    bar_top = box_bottom + 34*ss
-    bar_h = 24 * ss
-    for i, stat in enumerate(stats):
-        y = bar_top + i*(bar_h + 16*ss)
-        draw.text((38*ss, y+bar_h/2), stat, font=_casino_font(True, 15*ss), fill=(230, 220, 240), anchor="lm")
-        bx0, bx1 = 38*ss + 72*ss, W*ss - 38*ss
-        draw.rounded_rectangle([bx0, y, bx1, y+bar_h], radius=8*ss, fill=(45, 32, 58), outline=PURPLE_DARK, width=2*ss)
-        fill_w = (bx1-bx0) * (stat_value/100)
+    _npc_draw_sparkle(draw, W*ss/2, box_bottom+18*ss, 6*ss, PURPLE)
+
+    stats = [("STR", _npc_icon_dumbbell), ("INT", _npc_icon_book), ("LUCK", _npc_icon_clover), ("RIZZ", _npc_icon_heart)]
+    bar_top = box_bottom + 45*ss
+    row_h = 46 * ss
+    for i, (label, icon_fn) in enumerate(stats):
+        y = bar_top + i*(row_h + 14*ss)
+        badge_r = 20*ss
+        _npc_draw_icon_badge(draw, 45*ss+badge_r, y+row_h/2, badge_r, icon_fn, (238, 230, 250), PURPLE, PURPLE_DARK)
+        f_label = ImageFont.truetype(_NPC_FONT_SERIF_BOLD_PATH, 17*ss)
+        draw.text((45*ss+badge_r*2+14*ss, y+row_h/2), label, font=f_label, fill=PURPLE_DARK, anchor="lm")
+
+        bar_x0 = 45*ss + badge_r*2 + 14*ss + 70*ss
+        bar_x1 = W*ss - 130*ss
+        bar_h = 20 * ss
+        bar_y = y + row_h/2 - bar_h/2
+        draw.rounded_rectangle([bar_x0, bar_y, bar_x1, bar_y+bar_h], radius=10*ss, fill=(230, 222, 242), outline=(210, 195, 230), width=2*ss)
+        fill_w = (bar_x1-bar_x0) * (stat_value/100)
         if fill_w > 4*ss:
-            bar_h_int = int(bar_h)
-            bar_grad = Image.new("RGB", (1, bar_h_int))
-            bgpx = bar_grad.load()
-            top_g, bottom_g = (225, 195, 255), (165, 120, 215)
-            for y2 in range(bar_h_int):
-                t = y2 / max(1, bar_h_int - 1)
-                bgpx[0, y2] = tuple(int(top_g[i] + (bottom_g[i]-top_g[i])*t) for i in range(3))
-            bar_grad = bar_grad.resize((int(fill_w), bar_h_int))
-            bar_mask = Image.new("L", bar_grad.size, 0)
-            ImageDraw.Draw(bar_mask).rounded_rectangle([0, 0, bar_grad.width-1, bar_grad.height-1], radius=8*ss, fill=255)
-            ss_img.paste(bar_grad, (int(bx0), int(y)), bar_mask)
+            grad = _npc_vertical_gradient((int(fill_w), int(bar_h)), (200, 170, 235), (150, 110, 210))
+            gmask2 = Image.new("L", grad.size, 0)
+            ImageDraw.Draw(gmask2).rounded_rectangle([0, 0, grad.width-1, grad.height-1], radius=10*ss, fill=255)
+            ss_img.paste(grad, (int(bar_x0), int(bar_y)), gmask2)
             draw = ImageDraw.Draw(ss_img)
-            draw.rounded_rectangle([bx0+2*ss, y+2*ss, bx0+fill_w-2*ss, y+bar_h*0.42], radius=5*ss, fill=(255, 255, 255))
-        draw.text(((bx0+bx1)/2, y+bar_h/2), f"{stat_value}", font=_casino_font(True, 14*ss), fill=(255, 255, 255), anchor="mm")
 
-    footer_y = bar_top + len(stats)*(bar_h + 16*ss) + 18*ss
-    draw.text((W*ss/2, footer_y), "(suspiciously identical stats)", font=_casino_font(False, 13*ss), fill=(170, 155, 190), anchor="mm")
+        pill_x0, pill_x1 = W*ss - 118*ss, W*ss - 45*ss
+        draw.rounded_rectangle([pill_x0, y+row_h/2-16*ss, pill_x1, y+row_h/2+16*ss], radius=16*ss, fill=(238, 230, 250), outline=(210, 195, 230), width=2*ss)
+        f_val = ImageFont.truetype(_NPC_FONT_SERIF_REGULAR_PATH, 15*ss)
+        draw.text(((pill_x0+pill_x1)/2, y+row_h/2), f"{stat_value} / 100", font=f_val, fill=PURPLE_DARK, anchor="mm")
+
+    footer_y = bar_top + len(stats)*(row_h + 14*ss) + 20*ss
+    f_footer = ImageFont.truetype(_NPC_FONT_SERIF_ITALIC_PATH, 15*ss)
+    footer_text = "(suspiciously identical stats)"
+    fbbox = draw.textbbox((0, 0), footer_text, font=f_footer)
+    fw = fbbox[2] - fbbox[0]
+    draw.text((W*ss/2, footer_y), footer_text, font=f_footer, fill=(150, 135, 175), anchor="mm")
+    _npc_draw_sparkle(draw, W*ss/2-fw/2-16*ss, footer_y, 5*ss, PURPLE)
+    _npc_draw_sparkle(draw, W*ss/2+fw/2+16*ss, footer_y, 5*ss, PURPLE)
 
     final = ss_img.resize((W, H), Image.LANCZOS)
     buffer = io.BytesIO()
