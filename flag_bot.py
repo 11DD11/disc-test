@@ -54,6 +54,25 @@ DOT_REPLY_TRIGGERS = {".", "..", "..."}
 # Easter egg: mentioning this specific user posts a real voice message
 # (the blue waveform bubble, not a regular audio attachment).
 VOICE_MENTION_TARGET_USER_ID = 764457716110327809
+
+# ----------------------------------------------------------------------
+# AUTO-MODERATION
+# ----------------------------------------------------------------------
+# Automatically deletes messages containing a middle finger emoji (any skin
+# tone) or certain banned phrases, then DMs the dev with details about what
+# was removed. Requires the bot to have "Manage Messages" permission in the
+# server — see README for setup.
+
+MOD_ALERT_USER_ID = 764457716110327809  # same person as the voice-mention easter egg
+
+# Matches 🖕 with or without a skin-tone modifier (U+1F3FB–U+1F3FF)
+MIDDLE_FINGER_PATTERN = re.compile("\U0001F595[\U0001F3FB-\U0001F3FF]?")
+
+# Starting list of banned phrases (case-insensitive substring match). Add more
+# as needed — this isn't meant to be exhaustive, just a reasonable baseline.
+BANNED_PHRASES = [
+    "fuck you", "fuck u", "fuk you", "fck you", "f u c k you",
+]
 # Matches only an explicit typed @mention (e.g. <@764...> or <@!764...>).
 # Deliberately does NOT use message.mentions, since Discord also populates
 # that list when someone replies with the ping toggle on, even without an
@@ -2788,10 +2807,65 @@ async def handle_bot_mention_voice_easter_egg(message: discord.Message):
         await send_voice_message(message.channel.id, BOT_MENTION_VOICE_CLIP_PATH, BOT_MENTION_VOICE_CLIP_DURATION_SECS, BOT_MENTION_VOICE_CLIP_WAVEFORM_B64)
 
 
+def _message_violates_policy(content: str) -> bool:
+    if MIDDLE_FINGER_PATTERN.search(content):
+        return True
+    lowered = content.lower()
+    return any(phrase in lowered for phrase in BANNED_PHRASES)
+
+
+async def handle_auto_moderation(message: discord.Message) -> bool:
+    """Deletes the message if it violates policy and DMs the dev with details.
+    Returns True if the message was removed (so on_message can stop early and
+    skip other handlers that would otherwise act on now-deleted content)."""
+    if not _message_violates_policy(message.content):
+        return False
+
+    # Capture everything before deleting, since the message object becomes
+    # unusable for some properties (and pointless to reference) afterward.
+    content = message.content
+    author = message.author
+    channel = message.channel
+    guild = message.guild
+    timestamp = message.created_at
+    message_id = message.id
+
+    delete_error = None
+    try:
+        await message.delete()
+    except discord.Forbidden:
+        delete_error = "Missing 'Manage Messages' permission — the message was flagged but NOT deleted."
+    except discord.HTTPException as e:
+        delete_error = f"Delete failed: {e}"
+
+    try:
+        dev_user = await bot.fetch_user(MOD_ALERT_USER_ID)
+        embed = discord.Embed(
+            title="🚨 Auto-moderation: message removed" if not delete_error else "🚨 Auto-moderation: flagged (not deleted)",
+            description=content if content else "*(no text content — likely just an emoji/attachment)*",
+            color=discord.Color.red(),
+            timestamp=timestamp,
+        )
+        embed.add_field(name="Sent by", value=f"{author} ({author.id})", inline=False)
+        embed.add_field(name="Channel", value=f"#{channel.name} ({channel.id})" if hasattr(channel, "name") else str(channel), inline=False)
+        embed.add_field(name="Server", value=f"{guild.name} ({guild.id})" if guild else "DM", inline=False)
+        embed.add_field(name="Message ID", value=str(message_id), inline=False)
+        if delete_error:
+            embed.add_field(name="⚠️ Deletion issue", value=delete_error, inline=False)
+        await dev_user.send(embed=embed)
+    except discord.HTTPException as e:
+        print(f"Could not DM dev about auto-moderation event: {e}")
+
+    return delete_error is None
+
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+
+    if await handle_auto_moderation(message):
+        return  # message was deleted — don't process it further
 
     await handle_dot_reply_easter_egg(message)
     await handle_voice_mention_easter_egg(message)

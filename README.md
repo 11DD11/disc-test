@@ -113,6 +113,19 @@ Whenever the user with ID `764457716110327809` is @mentioned by anyone in a mess
 
 **Setup:** the audio clip is bundled at `assets/dev_voice_clip.ogg` — already converted to match Discord's exact spec (mono, 48kHz, Opus) with a real waveform preview pre-computed from the actual audio (not fake/random data). Nothing to configure; just make sure that file is uploaded to your repo alongside the code. To change the clip or the target user, edit `VOICE_MENTION_TARGET_USER_ID` and `VOICE_CLIP_PATH` near the top of `flag_bot.py` — note that swapping the audio file also means recomputing `VOICE_CLIP_DURATION_SECS` and `VOICE_CLIP_WAVEFORM_B64` to match (ask if you want a new clip converted).
 
+## Auto-moderation
+The bot automatically deletes any message containing a middle-finger emoji (any skin tone, 🖕🏻🖕🏼🖕🏽🖕🏾🖕🏿) or certain banned phrases (a starting list including "fuck you" and common variants — see `BANNED_PHRASES` near the top of `flag_bot.py` to add more). After deleting, it sends a DM to the dev (`MOD_ALERT_USER_ID`, same person as the voice-mention easter egg) with:
+- The full message content
+- Who sent it (name + user ID)
+- Which channel and server it was in
+- The message ID and timestamp
+
+**Required setup:** the bot needs the **"Manage Messages"** permission in your server for deletion to work. Add this when generating your invite URL (OAuth2 → URL Generator → Bot Permissions), alongside the other permissions already listed in Setup above. If this permission is missing, the bot will still detect and DM you about violations, but won't be able to delete them — the DM will note this explicitly.
+
+**Limitations to know about:**
+- This is a simple substring/regex filter, not a smart content classifier — it won't catch heavily obfuscated evasions (e.g. excessive spacing, symbol substitution beyond what's listed) and may occasionally have false negatives. It's a reasonable baseline, not a complete moderation solution.
+- If the dev's DMs are closed or the bot can't reach them for any reason, the deletion still happens, but the alert DM silently fails (logged to console only).
+
 ## Easter egg: voice message when the bot is mentioned
 Whenever the bot itself is explicitly @mentioned (e.g. typing `@Bonbon`, not just replying to one of its messages), it responds with a different voice message — same mechanism as above, just a separate clip and separate trigger. Bundled at `assets/bot_mention_voice_clip.ogg`, already converted and with a real waveform pre-computed the same way. Uses `BOT_MENTION_VOICE_CLIP_PATH`/`_DURATION_SECS`/`_WAVEFORM_B64` near the top of `flag_bot.py`.
 
